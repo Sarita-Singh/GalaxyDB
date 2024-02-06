@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chirag-ghosh/traffic-wizard/loadbalancer/internal/consistenthashmap"
+	"github.com/Sarita-Singh/galaxyDB/loadbalancer/internal/consistenthashmap"
 )
 
-const ServerDockerImageName = "traffix-wizard-server"
-const DockerNetworkName = "traffic-wizard-network"
+const ServerDockerImageName = "galaxydb-server"
+const DockerNetworkName = "galaxydb-network"
 const ServerPort = 5000
 const N = 3
 
@@ -39,7 +39,7 @@ func spawnNewServerInstance(hostname string, id int) {
 
 func getRequestID() int {
 	rand.Seed(time.Now().UnixNano())
-    return rand.Intn(900000) + 100000
+	return rand.Intn(900000) + 100000
 }
 
 type ServerInfo struct {
@@ -161,7 +161,6 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 		servers[serverID] = ServerInfo{ID: serverID, Hostname: hostname}
 		serverDown := make(chan int)
 		go checkHeartbeat(servers[serverID], serverDown)
-		
 
 		if i+1 == payload.N {
 			break
@@ -319,7 +318,7 @@ func routeRequest(w http.ResponseWriter, r *http.Request) {
 
 	server, exists := servers[serverID]
 	if !exists {
-		
+
 		responseError(w, "<Error> Server not found", http.StatusNotFound)
 		return
 	}
@@ -348,41 +347,41 @@ func routeRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkHeartbeat(server ServerInfo, serverDown chan<- int) {
-    for {
+	for {
 		if _, exists := servers[server.ID]; !exists {
 			return
 		}
 		serverIP := getServerIP(server.Hostname)
 		resp, err := http.Get("http://" + getServerIP(server.Hostname) + ":" + fmt.Sprint(ServerPort) + "/heartbeat")
-        if len(serverIP) == 0 || err != nil || resp.StatusCode != http.StatusOK {
-            fmt.Printf("Server %s is down!\n", server.Hostname)
-            serverDown <- server.ID
-            return
-        }
+		if len(serverIP) == 0 || err != nil || resp.StatusCode != http.StatusOK {
+			fmt.Printf("Server %s is down!\n", server.Hostname)
+			serverDown <- server.ID
+			return
+		}
 
-        time.Sleep(5 * time.Second)
-    }
+		time.Sleep(5 * time.Second)
+	}
 }
 
 func monitorServers() {
-    serverDown := make(chan int)
+	serverDown := make(chan int)
 
-    // monitoring heartbeat of each server
-    for _, server := range servers {
-        go checkHeartbeat(server, serverDown)
-    }
+	// monitoring heartbeat of each server
+	for _, server := range servers {
+		go checkHeartbeat(server, serverDown)
+	}
 
-    for {
-        downServerID := <-serverDown
+	for {
+		downServerID := <-serverDown
 		downServer := servers[downServerID]
 		delete(servers, downServerID)
 		newServerID := getNextServerID()
 		newServerHostname := fmt.Sprintf("autohost-%d", newServerID)
-        fmt.Printf("Restarting server %s as %s\n", downServer.Hostname, newServerHostname)
-        spawnNewServerInstance(newServerHostname, newServerID)
+		fmt.Printf("Restarting server %s as %s\n", downServer.Hostname, newServerHostname)
+		spawnNewServerInstance(newServerHostname, newServerID)
 		servers[newServerID] = ServerInfo{ID: newServerID, Hostname: newServerHostname}
 		go checkHeartbeat(servers[newServerID], serverDown)
-    }
+	}
 }
 
 // cleanupServers stops and removes all server containers

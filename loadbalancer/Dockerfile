@@ -9,7 +9,7 @@ RUN apt-get update \
     && apt-get update \
     && apt-get -y install docker-ce-cli
 
-ENV USER=traffic
+ENV USER=galaxydb
 RUN useradd -m -s /bin/sh $USER \
     && usermod -aG sudo $USER
 
@@ -28,10 +28,10 @@ RUN chown -R $USER:$USER /lb
 USER $USER
 
 # build
-RUN go build -o /lb/traffic-wizard-lb
+RUN go build -o /lb/galaxydb-lb
 
 # the application is going to listen in the port 5000
 EXPOSE 5000
 
 # run
-CMD ["/lb/traffic-wizard-lb"]
+CMD ["/lb/galaxydb-lb"]

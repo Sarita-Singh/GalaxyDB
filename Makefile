@@ -12,5 +12,5 @@ stop:
 .PHONY: test
 test:
 	cd testing \
-		&& docker build --tag traffic-wizard-testing . \
-		&& docker run -v "$$(pwd)/images:/images" --rm --network="host" traffic-wizard-testing
+		&& docker build --tag galaxydb-testing . \
+		&& docker run -v "$$(pwd)/images:/images" --rm --network="host" galaxydb-testing

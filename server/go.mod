@@ -1,3 +1,3 @@
-module github.com/chirag-ghosh/traffic-wizard/server
+module github.com/Sarita-Singh/galaxyDB/server
 
 go 1.21.0

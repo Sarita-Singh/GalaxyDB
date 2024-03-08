@@ -1,21 +1,16 @@
-# syntax=docker/dockerfile:1
+FROM golang:1.21 AS builder
 
-FROM golang:1.21
-
-WORKDIR /server
-
-# setting the destination for COPY
-COPY go.mod ./
+WORKDIR /src
+COPY . .
 RUN go mod download
+RUN CGO_ENABLED=1 GOOS=linux go build -o /app -a -ldflags '-linkmode external -extldflags "-static"' .
 
-# Copying all the .go files
-COPY *.go ./
+FROM busybox:1.36-musl
 
-# build
-RUN go build -o /galaxydb-server
+# Copy the binary from the builder
+COPY --from=builder /app /app
 
-# the application is going to listen in the port 5000
 EXPOSE 5000
 
-# run
-CMD ["/galaxydb-server"]
+# Run postinstall script and the binary
+CMD ["/app"]

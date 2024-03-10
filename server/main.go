@@ -59,6 +59,17 @@ type ReadResponse struct {
 	Status string      `json:"status"`
 }
 
+type UpdateRequest struct {
+	Shard  string    `json:"shard"`
+	StudID int       `json:"Stud_id"`
+	Data   ShardData `json:"data"`
+}
+
+type DeleteRequest struct {
+	Shard  string `json:"shard"`
+	StudID int    `json:"Stud_id"`
+}
+
 func heartbeatEndpoint(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
@@ -267,6 +278,62 @@ func readHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func updateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+		return
+	}
+	var reqBody UpdateRequest
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "Error decoding JSON: %v", err)
+		return
+	}
+	shard := reqBody.Shard
+	query := fmt.Sprintf("UPDATE %s SET Stud_marks = ? WHERE Stud_id = ?", shard)
+	_, err = db.Exec(query, reqBody.Data.StudentMarks, reqBody.StudID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Error updating data in shard %s for Stud_id %d: %v", shard, reqBody.StudID, err)
+		return
+	}
+	resp := make(map[string]string)
+	resp["message"] = fmt.Sprintf("Data entry for Stud_id:%d updated", reqBody.StudID)
+	resp["status"] = "success"
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
+func deleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+		return
+	}
+	var reqBody DeleteRequest
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "Error decoding JSON: %v", err)
+		return
+	}
+	shard := reqBody.Shard
+	query := fmt.Sprintf("DELETE FROM %s WHERE Stud_id = ?", shard)
+	_, err = db.Exec(query, reqBody.StudID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Error deleting data in shard %s for Stud_id %d: %v", reqBody.Shard, reqBody.StudID, err)
+		return
+	}
+	resp := make(map[string]string)
+	resp["message"] = fmt.Sprintf("Data entry with Stud_id:%d removed", reqBody.StudID)
+	resp["status"] = "success"
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func main() {
 	var err error
 	db, err = sql.Open("sqlite3", "/galaxy.db")
@@ -285,6 +352,8 @@ func main() {
 	http.HandleFunc("/copy", copyHandler)
 	http.HandleFunc("/read", readHandler)
 	http.HandleFunc("/write", writeHandler)
+	http.HandleFunc("/update", updateHandler)
+	http.HandleFunc("/delete", deleteHandler)
 
 	fmt.Println("Starting server on port 5000")
 	err = http.ListenAndServe(":5000", nil)

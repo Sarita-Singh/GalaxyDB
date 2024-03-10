@@ -336,7 +336,7 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	var err error
-	db, err = sql.Open("sqlite3", "/galaxy.db")
+	db, err = sql.Open("sqlite3", "galaxy.db")
 	if err != nil {
 		log.Fatal(err)
 	}

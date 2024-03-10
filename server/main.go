@@ -46,6 +46,19 @@ type WriteResponse struct {
 	Status     string `json:"status"`
 }
 
+type ReadRequest struct {
+	Shard  string `json:"shard"`
+	StudID struct {
+		Low  int `json:"low"`
+		High int `json:"high"`
+	} `json:"Stud_id"`
+}
+
+type ReadResponse struct {
+	Data   []ShardData `json:"data"`
+	Status string      `json:"status"`
+}
+
 func heartbeatEndpoint(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
@@ -53,7 +66,7 @@ func heartbeatEndpoint(w http.ResponseWriter, r *http.Request) {
 
 func configEndpoint(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -112,9 +125,8 @@ func configEndpoint(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonResp)
 }
 
-func fetchDataFromShard(shardID string) ([]ShardData, error) {
-	query := fmt.Sprintf("SELECT Stud_id, Stud_name, Stud_marks FROM %s", shardID)
-
+// function to execute the query and return data from the shard
+func fetchDataFromShard(query string) ([]ShardData, error) {
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -136,7 +148,7 @@ func fetchDataFromShard(shardID string) ([]ShardData, error) {
 
 func copyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -152,7 +164,8 @@ func copyHandler(w http.ResponseWriter, r *http.Request) {
 	resp := make(map[string]interface{})
 
 	for _, shard := range reqBody.Shards {
-		data, err := fetchDataFromShard(shard)
+		query := fmt.Sprintf("SELECT Stud_id, Stud_name, Stud_marks FROM %s", shard)
+		data, err := fetchDataFromShard(query)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "Error fetching data from shard %s: %v", shard, err)
@@ -198,7 +211,7 @@ func writeDataToShard(request WriteRequest) (*WriteResponse, error) {
 
 func writeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -222,6 +235,38 @@ func writeHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func readHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var reqBody ReadRequest
+	err := json.NewDecoder(r.Body).Decode(&reqBody)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "Error decoding JSON: %v", err)
+		return
+	}
+	shard := reqBody.Shard
+	query := fmt.Sprintf("SELECT Stud_id, Stud_name, Stud_marks FROM %s WHERE Stud_id BETWEEN %d AND %d", shard, reqBody.StudID.Low, reqBody.StudID.High)
+	data, err := fetchDataFromShard(query)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Error reading data from shard %s: %v", shard, err)
+		return
+	}
+
+	response := ReadResponse{
+		Data:   data,
+		Status: "success",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
 func main() {
 	var err error
 	db, err = sql.Open("sqlite3", "/galaxy.db")
@@ -238,6 +283,7 @@ func main() {
 	http.HandleFunc("/heartbeat", heartbeatEndpoint)
 	http.HandleFunc("/config", configEndpoint)
 	http.HandleFunc("/copy", copyHandler)
+	http.HandleFunc("/read", readHandler)
 	http.HandleFunc("/write", writeHandler)
 
 	fmt.Println("Starting server on port 5000")

@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -38,7 +38,6 @@ func spawnNewServerInstance(hostname string, id int) {
 }
 
 func getRequestID() int {
-	rand.Seed(time.Now().UnixNano())
 	return rand.Intn(900000) + 100000
 }
 
@@ -150,7 +149,7 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		if flag == false {
+		if !flag {
 			continue
 		}
 		serverID := getNextServerID()
@@ -192,8 +191,6 @@ type RemoveServersResponse struct {
 }
 
 func chooseRandomServer() string {
-	rand.Seed(time.Now().UnixNano())
-
 	keys := make([]int, 0, len(servers))
 	for key := range servers {
 		keys = append(keys, key)
@@ -335,7 +332,7 @@ func routeRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, "Error reading response body: "+err.Error(), http.StatusInternalServerError)
 		return

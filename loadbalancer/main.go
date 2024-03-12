@@ -1,18 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
+	"regexp"
+	"strconv"
+	"sync"
 	"syscall"
-	"time"
 
 	"github.com/Sarita-Singh/galaxyDB/loadbalancer/internal/consistenthashmap"
 )
@@ -21,6 +22,132 @@ const ServerDockerImageName = "galaxydb-server"
 const DockerNetworkName = "galaxydb-network"
 const ServerPort = 5000
 const N = 3
+
+var chm = consistenthashmap.NewConsistentHashMap() // Initialize your consistent hash map
+
+// ServerConfig and ShardConfig structures represent the configuration
+// of servers and shards as provided in the init request.
+type ServerConfig struct {
+	ID       int      `json:"id"`
+	Hostname string   `json:"hostname"`
+	Shards   []string `json:"shards"`
+}
+
+type ShardConfig struct {
+	StudIDLow int    `json:"Stud_id_low"`
+	ShardID   string `json:"Shard_id"`
+	ShardSize int    `json:"Shard_size"`
+}
+
+type SchemaConfig struct {
+	Columns []string `json:"columns"`
+	Dtypes  []string `json:"dtypes"`
+}
+
+type InitRequest struct {
+	N       int                 `json:"N"`
+	Schema  SchemaConfig        `json:"schema"`
+	Shards  []ShardConfig       `json:"shards"`
+	Servers map[string][]string `json:"servers"`
+}
+
+var (
+	serverConfigs []ServerConfig
+	shardConfigs  []ShardConfig
+	serverMutex   sync.Mutex
+
+	configData struct {
+		Servers []ServerConfig `json:"servers"`
+		Shards  []ShardConfig  `json:"shards"`
+	}
+	configMutex sync.RWMutex
+)
+
+func initHandler(w http.ResponseWriter, r *http.Request) {
+	var req InitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	serverMutex.Lock()
+	configMutex.Lock() // Ensure thread safety
+	defer serverMutex.Unlock()
+	defer configMutex.Unlock()
+
+	// Convert map to slice for internal and configData storage
+	convertedServers := []ServerConfig{}
+	for serverName, shardIDs := range req.Servers {
+		convertedServer := ServerConfig{
+			Hostname: serverName,
+			ID:       getNextServerID(),
+			Shards:   shardIDs,
+		}
+		convertedServers = append(convertedServers, convertedServer)
+	}
+
+	// Now you have a slice of ServerConfig from the map
+	serverConfigs = convertedServers
+	shardConfigs = req.Shards
+
+	// Update configData with converted slice and shards directly
+	configData.Servers = convertedServers
+	configData.Shards = req.Shards
+
+	// Initialize shards in the consistent hash map
+	for _, shard := range req.Shards {
+		var serversForShard []string
+		for _, server := range convertedServers {
+			for _, serverShard := range server.Shards {
+				if serverShard == shard.ShardID {
+					serversForShard = append(serversForShard, strconv.Itoa(server.ID))
+					break
+				}
+			}
+		}
+		chm.AddShard(shard.ShardID, serversForShard)
+	}
+
+	// Respond with success
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"message": "Database initialized successfully", "status": "success"})
+}
+
+func statusHandler(w http.ResponseWriter, r *http.Request) {
+	configMutex.RLock() // Use read lock for concurrency safety
+	defer configMutex.RUnlock()
+
+	// Serve the stored configuration data
+	response := map[string]interface{}{
+		"N": len(configData.Servers), // Assuming "N" represents the number of servers
+		"schema": map[string][]string{
+			"columns": []string{"Stud_id", "Stud_name", "Stud_marks"},
+			"dtypes":  []string{"Number", "String", "String"},
+		},
+		"shards":  configData.Shards,
+		"servers": configData.Servers,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+type AddRequest struct {
+	N         int                 `json:"n"`
+	NewShards []ShardConfig       `json:"new_shards"`
+	Servers   map[string][]string `json:"servers"` // ServerID to list of ShardIDs
+}
+
+type AddResponse struct {
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
+
+type AddMapResponse struct {
+	Message map[string]interface{} `json:"message"`
+	Status  string                 `json:"status"`
+}
 
 func spawnNewServerInstance(hostname string, id int) {
 	cmd := exec.Command("sudo", "docker", "build", "--tag", ServerDockerImageName, "/server")
@@ -31,107 +158,34 @@ func spawnNewServerInstance(hostname string, id int) {
 
 	// Run the server Docker container
 	cmd = exec.Command("sudo", "docker", "run", "-d", "--name", hostname, "--network", DockerNetworkName, "-e", fmt.Sprintf("id=%d", id), fmt.Sprintf("%s:latest", ServerDockerImageName))
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	err = cmd.Run()
 	if err != nil {
-		log.Fatalf("Failed to start new server instance: %v", err)
+		// log.Fatalf("Failed to start new server instance: %v", err)
+		log.Printf("Failed to start new server instance: %v, stderr: %s", err, stderr.String())
 	}
-}
-
-func getRequestID() int {
-	return rand.Intn(900000) + 100000
-}
-
-type ServerInfo struct {
-	ID       int
-	Hostname string
-}
-
-var chm = consistenthashmap.ConsistentHashMap{}
-var servers = make(map[int]ServerInfo)
-
-func init() {
-	chm.Init()
-}
-
-func getReplicaStatus(w http.ResponseWriter, r *http.Request) {
-	replicas := make([]string, 0, len(servers))
-	for _, serverInfo := range servers {
-		replicas = append(replicas, serverInfo.Hostname)
-	}
-
-	response := map[string]interface{}{
-		"message": map[string]interface{}{
-			"N":        len(servers),
-			"replicas": replicas,
-		},
-		"status": "successful",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
 }
 
 func getNextServerID() int {
-	maxID := 0
-	for id := range servers {
-		if id > maxID {
-			maxID = id
-		}
-	}
-	return maxID + 1
-}
-
-type AddServersPayload struct {
-	N         int      `json:"n"`
-	Hostnames []string `json:"hostnames"`
-}
-
-type AddServersResponse struct {
-	Message map[string]interface{} `json:"message"`
-	Status  string                 `json:"status"`
-}
-
-func getReplicas() []string {
-	replicas := make([]string, 0, len(servers))
-	for _, serverInfo := range servers {
-		replicas = append(replicas, serverInfo.Hostname)
-	}
-	return replicas
-}
-
-func addRandomServers(n int) {
-	for temp := 1; temp <= n; temp++ {
-		serverID := getNextServerID()
-		hostname := fmt.Sprintf("autohost-%d", serverID)
-
-		chm.AddServer(serverID)
-
-		spawnNewServerInstance(hostname, serverID)
-
-		servers[serverID] = ServerInfo{ID: serverID, Hostname: hostname}
-		serverDown := make(chan int)
-		go checkHeartbeat(servers[serverID], serverDown)
-	}
+	return rand.Intn(900000) + 100000
 }
 
 func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method is not supported", http.StatusNotFound)
+	var req AddRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	var payload AddServersPayload
-	err := json.NewDecoder(r.Body).Decode(&payload)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	configMutex.Lock()
+	defer configMutex.Unlock()
 
-	// Perform sanity checks on the request payload
-	if len(payload.Hostnames) > payload.N {
-		resp := AddServersResponse{
-			Message: map[string]interface{}{"<Error>": "Length of hostname list is more than newly added instances"},
+	// Sanity check: ensure the number of servers to add does not exceed the request count
+	if len(req.Servers) < req.N {
+		resp := AddMapResponse{
+			Message: map[string]interface{}{"<Error>": "Number of new servers (n) is greater than newly added instances"},
 			Status:  "failure",
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -140,251 +194,181 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i, hostname := range payload.Hostnames {
-		flag := true
-		for _, serverInfo := range servers {
-			if serverInfo.Hostname == hostname {
-				fmt.Printf("Hostname: '%s' already present", hostname)
-				flag = false
-				break
+	// Handle adding new shards
+	for _, shard := range req.NewShards {
+		shardConfigs = append(shardConfigs, shard)
+		var serversForShard []string
+		for serverName, shardIDs := range req.Servers {
+			serverID := -1
+			for _, serverConfig := range configData.Servers {
+				if serverConfig.Hostname == serverName {
+					serverID = serverConfig.ID
+					break
+				}
+			}
+			for _, shardID := range shardIDs {
+				if shardID == shard.ShardID {
+					serversForShard = append(serversForShard, strconv.Itoa(serverID))
+					break
+				}
 			}
 		}
-		if !flag {
-			continue
-		}
+		chm.AddShard(shard.ShardID, serversForShard)
+	}
+
+	// Handle adding new servers
+	serverIDsAdded := []int{}
+	for serverName, shardIDs := range req.Servers {
+		// Assume spawnNewServerInstance creates or updates server instances as needed
 		serverID := getNextServerID()
-		chm.AddServer(serverID)
-
-		spawnNewServerInstance(hostname, serverID)
-
-		servers[serverID] = ServerInfo{ID: serverID, Hostname: hostname}
-		serverDown := make(chan int)
-		go checkHeartbeat(servers[serverID], serverDown)
-
-		if i+1 == payload.N {
-			break
+		// Check if the serverName conforms to the allowed characters
+		matched, err := regexp.MatchString(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`, serverName)
+		if err != nil {
+			log.Fatalf("Regex match error: %v", err)
 		}
+
+		if !matched {
+			// If serverName doesn't match, assign a new compliant hostname
+			serverName = fmt.Sprintf("Server-%d", serverID)
+		}
+		spawnNewServerInstance(serverName, serverID)
+
+		// chm.AddServer(strconv.Itoa(serverID), shardIDs)
+
+		serverConfigs = append(serverConfigs, ServerConfig{ID: serverID, Hostname: serverName, Shards: shardIDs})
+		serverIDsAdded = append(serverIDsAdded, serverID)
 	}
 
-	addRandomServers(payload.N - len(payload.Hostnames))
-
-	resp := AddServersResponse{
-		Message: map[string]interface{}{
-			"N":        len(servers),
-			"replicas": getReplicas(),
-		},
-		Status: "successful",
-	}
-	w.Header().Set("Content-Type", "application/json")
+	message := fmt.Sprintf("Added Servers: %v", serverIDsAdded)
+	json.NewEncoder(w).Encode(AddResponse{
+		Message: message,
+		Status:  "successful",
+	})
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
 }
 
-type RemoveServersPayload struct {
-	N         int      `json:"n"`
-	Hostnames []string `json:"hostnames"`
+type RemoveRequest struct {
+	N       int      `json:"n"`
+	Servers []string `json:"servers"` // List of server names to remove
 }
 
-type RemoveServersResponse struct {
+type RemoveResponse struct {
 	Message map[string]interface{} `json:"message"`
 	Status  string                 `json:"status"`
 }
 
-func chooseRandomServer() string {
-	keys := make([]int, 0, len(servers))
-	for key := range servers {
-		keys = append(keys, key)
-	}
-
-	if len(keys) == 0 {
-		return ""
-	}
-
-	randomServerID := keys[rand.Intn(len(keys))]
-
-	return servers[randomServerID].Hostname
-}
-
-func removeServerInstance(hostname string) {
-	flag := false
-	for _, serverInfo := range servers {
-		if serverInfo.Hostname == hostname {
-			flag = true
-			break
-		}
-	}
-	if !flag {
-		return
-	}
-
+// Removes a server instance by name. Returns true if removal was successful.
+func removeServerInstance(hostname string) bool {
 	cmd := exec.Command("sudo", "docker", "stop", hostname)
 	err := cmd.Run()
 	if err != nil {
 		log.Fatalf("Failed to stop server instance '%s': %v", hostname, err)
+		return false
 	}
 
 	cmd = exec.Command("sudo", "docker", "rm", hostname)
 	err = cmd.Run()
 	if err != nil {
 		log.Fatalf("Failed to remove server instance '%s': %v", hostname, err)
+		return false
 	}
 
-	var serverID int
-	for id, info := range servers {
-		if info.Hostname == hostname {
-			serverID = id
+	serverID := -1
+	for _, serverConfig := range configData.Servers {
+		if serverConfig.Hostname == hostname {
+			serverID = serverConfig.ID
 			break
 		}
 	}
-	delete(servers, serverID)
-	chm.RemoveServer(serverID)
+
+	// Update the consistent hash map to remove the server's virtual nodes and shard associations
+	// chm.RemoveServer(strconv.Itoa(serverID))
+
+	// Lock global config data for thread-safe operation
+	configMutex.Lock()
+	defer configMutex.Unlock()
+
+	// Update serverConfigs to reflect removal
+	for i, serverConfig := range configData.Servers {
+		if serverConfig.ID == serverID {
+			configData.Servers = append(configData.Servers[:i], configData.Servers[i+1:]...)
+			break // Assuming server IDs are unique, can break after finding
+		}
+	}
+
+	return true
+}
+
+// Randomly chooses a server to remove
+func chooseRandomServer() string {
+	if len(configData.Servers) == 0 {
+		return ""
+	}
+	index := rand.Intn(len(configData.Servers))
+	return configData.Servers[index].Hostname
 }
 
 func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+	var req RemoveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	var payload RemoveServersPayload
-	err := json.NewDecoder(r.Body).Decode(&payload)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	configMutex.Lock()
+	defer configMutex.Unlock()
 
-	if len(payload.Hostnames) > payload.N {
-		resp := RemoveServersResponse{
-			Message: map[string]interface{}{"<Error>": "Length of hostname list is more than removable instances"},
+	// Sanity check: If the provided server list is longer than the number of servers to remove
+	if len(req.Servers) > req.N {
+		json.NewEncoder(w).Encode(RemoveResponse{
+			Message: map[string]interface{}{"<Error>": "Length of server list is more than removable instances"},
 			Status:  "failure",
-		}
-		w.Header().Set("Content-Type", "application/json")
+		})
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(resp)
 		return
 	}
 
-	for _, hostname := range payload.Hostnames {
-		removeServerInstance(hostname)
+	// Track removed servers for response
+	removedServers := make([]string, 0, len(req.Servers))
+
+	// Remove specified servers
+	for _, serverName := range req.Servers {
+		if removeServerInstance(serverName) {
+			removedServers = append(removedServers, serverName)
+		}
 	}
 
-	for len(payload.Hostnames) < payload.N {
-		hostname := chooseRandomServer()
-		removeServerInstance(hostname)
-		payload.Hostnames = append(payload.Hostnames, hostname)
+	// If additional servers need to be randomly removed
+	additionalRemovalsNeeded := req.N - len(removedServers)
+	for additionalRemovalsNeeded > 0 {
+		// Choose a server randomly and remove it
+		if serverName := chooseRandomServer(); serverName != "" {
+			if removeServerInstance(serverName) {
+				removedServers = append(removedServers, serverName)
+				additionalRemovalsNeeded--
+			}
+		}
 	}
 
-	resp := RemoveServersResponse{
+	response := RemoveResponse{
 		Message: map[string]interface{}{
-			"N":        len(servers),
-			"replicas": getReplicas(),
+			"N":       len(configData.Servers) - len(removedServers),
+			"servers": removedServers,
 		},
 		Status: "successful",
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
-}
-
-func responseError(w http.ResponseWriter, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{
-		"message": message,
-		"status":  "failure",
-	})
-}
-
-func getServerIP(hostname string) string {
-	cmd := exec.Command("sudo", "docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", hostname)
-	output, err := cmd.Output()
-	if err != nil {
-		fmt.Printf("Error running docker inspect: %v\n", err)
-		return ""
-	}
-
-	return strings.TrimSpace(string(output))
-}
-
-func routeRequest(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
-	requestID := getRequestID()
-	serverID := chm.GetServerForRequest(requestID)
-
-	server, exists := servers[serverID]
-	if !exists {
-
-		responseError(w, "<Error> Server not found", http.StatusNotFound)
-		return
-	}
-
-	resp, err := http.Get("http://" + getServerIP(server.Hostname) + ":" + fmt.Sprint(ServerPort) + path)
-	if err != nil {
-		http.Error(w, "Error forwarding request: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		http.Error(w, "<Error> '"+path+"' endpoint does not exist in server replicas", http.StatusBadRequest)
-		return
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Error reading response body: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(body)
-}
-
-func checkHeartbeat(server ServerInfo, serverDown chan<- int) {
-	for {
-		if _, exists := servers[server.ID]; !exists {
-			return
-		}
-		serverIP := getServerIP(server.Hostname)
-		resp, err := http.Get("http://" + getServerIP(server.Hostname) + ":" + fmt.Sprint(ServerPort) + "/heartbeat")
-		if len(serverIP) == 0 || err != nil || resp.StatusCode != http.StatusOK {
-			fmt.Printf("Server %s is down!\n", server.Hostname)
-			serverDown <- server.ID
-			return
-		}
-
-		time.Sleep(5 * time.Second)
-	}
-}
-
-func monitorServers() {
-	serverDown := make(chan int)
-
-	// monitoring heartbeat of each server
-	for _, server := range servers {
-		go checkHeartbeat(server, serverDown)
-	}
-
-	for {
-		downServerID := <-serverDown
-		downServer := servers[downServerID]
-		delete(servers, downServerID)
-		newServerID := getNextServerID()
-		newServerHostname := fmt.Sprintf("autohost-%d", newServerID)
-		fmt.Printf("Restarting server %s as %s\n", downServer.Hostname, newServerHostname)
-		spawnNewServerInstance(newServerHostname, newServerID)
-		servers[newServerID] = ServerInfo{ID: newServerID, Hostname: newServerHostname}
-		go checkHeartbeat(servers[newServerID], serverDown)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to send response: %v", err)
+		// Handle error in sending response if necessary.
 	}
 }
 
 // cleanupServers stops and removes all server containers
 func cleanupServers() {
 	fmt.Println("Cleaning up server instances...")
-	for _, server := range servers {
+	for _, server := range configData.Servers {
 		stopCmd := exec.Command("sudo", "docker", "stop", server.Hostname)
 		removeCmd := exec.Command("sudo", "docker", "rm", server.Hostname)
 
@@ -410,23 +394,13 @@ func main() {
 		cleanupDone <- true // Signal that cleanup is done
 	}()
 
-	http.HandleFunc("/rep", getReplicaStatus)
+	http.HandleFunc("/init", initHandler)
+	http.HandleFunc("/status", statusHandler)
 	http.HandleFunc("/add", addServersEndpoint)
 	http.HandleFunc("/rm", removeServersEndpoint)
-	http.HandleFunc("/", routeRequest)
 
-	if N > 0 {
-		fmt.Println("Spawning initial servers")
-		addRandomServers(N)
-		fmt.Println("Spawned ", N, " server replicas")
-	}
-	go monitorServers()
-
-	fmt.Println("Load Balancer started on port 5000")
-
-	if err := http.ListenAndServe(":5000", nil); err != nil {
-		log.Fatalf("Failed to start load balancer: %v", err)
-	}
+	fmt.Println("Load Balancer running on port 5000")
+	log.Fatal(http.ListenAndServe(":5000", nil))
 
 	// Waiting for cleanup to be done before exiting
 	<-cleanupDone

@@ -7,12 +7,13 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 )
 
-func getNextServerID() int {
+func getRandomID() int {
 	return rand.Intn(900000) + 100000
 }
 
@@ -20,13 +21,21 @@ func getServerID(rawServerName string) int {
 	rawServerID := rawServerName[len("Server"):]
 	serverID, err := strconv.Atoi(rawServerID)
 	if err != nil {
-		return getNextServerID()
+		return getRandomID()
 	}
 	return serverID
 }
 
 func buildServerInstance() {
-	cmd := exec.Command("sudo", "docker", "build", "--tag", ServerDockerImageName, "/server")
+	env := os.Getenv("GO_ENV")
+	var serverPath string
+	if env == "production" {
+		serverPath = "/server"
+	} else {
+		serverPath = "../server"
+	}
+
+	cmd := exec.Command("sudo", "docker", "build", "--tag", ServerDockerImageName, serverPath)
 	err := cmd.Run()
 	if err != nil {
 		log.Fatalln("Failed to build server image: ", err)

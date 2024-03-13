@@ -65,3 +65,19 @@ func configNewServerInstance(serverID int, shards []string, schema SchemaConfig)
 	}
 	defer resp.Body.Close()
 }
+
+func removeServerInstance(hostname string) {
+	cmd := exec.Command("sudo", "docker", "stop", hostname)
+	err := cmd.Run()
+	if err != nil {
+		log.Fatalf("Failed to stop server instance '%s': %v", hostname, err)
+		return
+	}
+
+	cmd = exec.Command("sudo", "docker", "rm", hostname)
+	err = cmd.Run()
+	if err != nil {
+		log.Fatalf("Failed to remove server instance '%s': %v", hostname, err)
+		return
+	}
+}

@@ -50,6 +50,7 @@ var (
 	schemaConfig  SchemaConfig
 	shardTConfigs []ShardTConfig
 	mapTConfigs   []MapTConfig
+	serverIDs     []int
 )
 
 func getNextServerID() int {
@@ -80,6 +81,7 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 			mapTConfigs = append(mapTConfigs, MapTConfig{ShardID: shardID, ServerID: serverID})
 		}
 
+		serverIDs = append(serverIDs, serverID)
 		spawnNewServerInstance(fmt.Sprintf("Server%d", serverID), serverID)
 		configNewServerInstance(serverID, shardIDs, req.Schema)
 	}
@@ -135,14 +137,15 @@ type AddRequest struct {
 	Servers   map[string][]string `json:"servers"` // ServerID to list of ShardIDs
 }
 
-type AddResponse struct {
+type AddResponseSuccess struct {
+	N       int    `json:"N"`
 	Message string `json:"message"`
 	Status  string `json:"status"`
 }
 
-type AddMapResponse struct {
-	Message map[string]interface{} `json:"message"`
-	Status  string                 `json:"status"`
+type AddResponseFailed struct {
+	Message string `json:"message"`
+	Status  string `json:"status"`
 }
 
 func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -153,8 +156,8 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Servers) < req.N {
-		resp := AddMapResponse{
-			Message: map[string]interface{}{"<Error>": "Number of new servers (n) is greater than newly added instances"},
+		resp := AddResponseFailed{
+			Message: "<Error> Number of new servers (n) is greater than newly added instances",
 			Status:  "failure",
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -172,6 +175,7 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 			mapTConfigs = append(mapTConfigs, MapTConfig{ShardID: shardID, ServerID: serverID})
 		}
 
+		serverIDs = append(serverIDs, serverID)
 		spawnNewServerInstance(fmt.Sprintf("Server%d", serverID), serverID)
 		configNewServerInstance(serverID, shardIDs, schemaConfig)
 	}
@@ -203,7 +207,8 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(AddResponse{
+	json.NewEncoder(w).Encode(AddResponseSuccess{
+		N:       len(serverIDs),
 		Message: addServerMessage,
 		Status:  "successful",
 	})
@@ -212,134 +217,131 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 
 type RemoveRequest struct {
 	N       int      `json:"n"`
-	Servers []string `json:"servers"` // List of server names to remove
+	Servers []string `json:"servers"`
 }
 
-type RemoveResponse struct {
+type RemoveResponseSuccess struct {
 	Message map[string]interface{} `json:"message"`
 	Status  string                 `json:"status"`
 }
 
-// Removes a server instance by name. Returns true if removal was successful.
-// func removeServerInstance(hostname string) bool {
-// 	cmd := exec.Command("sudo", "docker", "stop", hostname)
-// 	err := cmd.Run()
-// 	if err != nil {
-// 		log.Fatalf("Failed to stop server instance '%s': %v", hostname, err)
-// 		return false
-// 	}
+type RemoveResponseFailed struct {
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
 
-// 	cmd = exec.Command("sudo", "docker", "rm", hostname)
-// 	err = cmd.Run()
-// 	if err != nil {
-// 		log.Fatalf("Failed to remove server instance '%s': %v", hostname, err)
-// 		return false
-// 	}
+func chooseRandomServerForRemoval(serverIDsRemoved []int) int {
+	if len(serverIDs)-len(serverIDsRemoved) <= 0 {
+		return -1
+	}
 
-// 	serverID := -1
-// 	for _, serverConfig := range configData.Servers {
-// 		if serverConfig.Hostname == hostname {
-// 			serverID = serverConfig.ID
-// 			break
-// 		}
-// 	}
-
-// 	// Update the consistent hash map to remove the server's virtual nodes and shard associations
-// 	// chm.RemoveServer(strconv.Itoa(serverID))
-
-// 	// Update serverConfigs to reflect removal
-// 	for i, serverConfig := range configData.Servers {
-// 		if serverConfig.ID == serverID {
-// 			configData.Servers = append(configData.Servers[:i], configData.Servers[i+1:]...)
-// 			break // Assuming server IDs are unique, can break after finding
-// 		}
-// 	}
-
-// 	return true
-// }
-
-// Randomly chooses a server to remove
-// func chooseRandomServer() string {
-// 	if len(configData.Servers) == 0 {
-// 		return ""
-// 	}
-// 	index := rand.Intn(len(configData.Servers))
-// 	return configData.Servers[index].Hostname
-// }
-
-// func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
-// 	var req RemoveRequest
-// 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-// 		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
-// 		return
-// 	}
-
-// 	// Sanity check: If the provided server list is longer than the number of servers to remove
-// 	if len(req.Servers) > req.N {
-// 		json.NewEncoder(w).Encode(RemoveResponse{
-// 			Message: map[string]interface{}{"<Error>": "Length of server list is more than removable instances"},
-// 			Status:  "failure",
-// 		})
-// 		w.WriteHeader(http.StatusBadRequest)
-// 		return
-// 	}
-
-// 	// Track removed servers for response
-// 	removedServers := make([]string, 0, len(req.Servers))
-
-// 	// Remove specified servers
-// 	for _, serverName := range req.Servers {
-// 		if removeServerInstance(serverName) {
-// 			removedServers = append(removedServers, serverName)
-// 		}
-// 	}
-
-// 	// If additional servers need to be randomly removed
-// 	additionalRemovalsNeeded := req.N - len(removedServers)
-// 	for additionalRemovalsNeeded > 0 {
-// 		// Choose a server randomly and remove it
-// 		if serverName := chooseRandomServer(); serverName != "" {
-// 			if removeServerInstance(serverName) {
-// 				removedServers = append(removedServers, serverName)
-// 				additionalRemovalsNeeded--
-// 			}
-// 		}
-// 	}
-
-// 	response := RemoveResponse{
-// 		Message: map[string]interface{}{
-// 			"N":       len(configData.Servers) - len(removedServers),
-// 			"servers": removedServers,
-// 		},
-// 		Status: "successful",
-// 	}
-// 	w.Header().Set("Content-Type", "application/json")
-// 	w.WriteHeader(http.StatusOK)
-// 	if err := json.NewEncoder(w).Encode(response); err != nil {
-// 		log.Printf("Failed to send response: %v", err)
-// 		// Handle error in sending response if necessary.
-// 	}
-// }
-
-// cleanupServers stops and removes all server containers
-func cleanupServers() {
-	fmt.Println("Cleaning up server instances...")
-
-	servers := []int{}
-	for _, mapTConfig := range mapTConfigs {
-		contains := false
-		for _, server := range servers {
-			if server == mapTConfig.ServerID {
-				contains = true
+	serverIDsAvailable := []int{}
+	for _, serverID := range serverIDs {
+		isPresent := false
+		for _, serverIDRemoved := range serverIDsRemoved {
+			if serverIDRemoved == serverID {
+				isPresent = true
 				break
 			}
 		}
-		if !contains {
-			servers = append(servers, mapTConfig.ServerID)
+		if !isPresent {
+			serverIDsAvailable = append(serverIDsAvailable, serverID)
 		}
 	}
 
-	for _, server := range servers {
+	index := rand.Intn(len(serverIDsAvailable))
+	return serverIDsAvailable[index]
+}
+
+func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
+	var req RemoveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Servers) > req.N {
+		json.NewEncoder(w).Encode(RemoveResponseFailed{
+			Message: "<Error> Length of server list is more than removable instances",
+			Status:  "failure",
+		})
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	serverIDsRemoved := []int{}
+	for _, serverName := range req.Servers {
+		serverIDsRemoved = append(serverIDsRemoved, getServerID(serverName))
+	}
+
+	additionalRemovalsNeeded := req.N - len(serverIDsRemoved)
+	for additionalRemovalsNeeded > 0 {
+		if serverID := chooseRandomServerForRemoval(serverIDsRemoved); serverID != -1 {
+			serverIDsRemoved = append(serverIDsRemoved, serverID)
+			additionalRemovalsNeeded -= 1
+		}
+	}
+
+	newMapTConfigs := []MapTConfig{}
+	for _, mapTConfig := range mapTConfigs {
+		isPresent := false
+		for _, serverIDRemoved := range serverIDsRemoved {
+			if mapTConfig.ServerID == serverIDRemoved {
+				isPresent = true
+				break
+			}
+		}
+		if isPresent {
+			for _, shardTConfig := range shardTConfigs {
+				if shardTConfig.ShardID == mapTConfig.ShardID {
+					shardTConfig.chm.RemoveServer(mapTConfig.ServerID)
+				}
+			}
+		} else {
+			newMapTConfigs = append(newMapTConfigs, mapTConfig)
+		}
+	}
+	mapTConfigs = newMapTConfigs
+
+	newServerIDs := []int{}
+	for _, serverID := range serverIDs {
+		isPresent := false
+		for _, serverIDRemoved := range serverIDsRemoved {
+			if serverIDRemoved == serverID {
+				isPresent = true
+				break
+			}
+		}
+		if !isPresent {
+			newServerIDs = append(newServerIDs, serverID)
+		}
+	}
+	serverIDs = newServerIDs
+
+	serverNamesRemoved := []string{}
+	for _, serverIDRemoved := range serverIDsRemoved {
+		serverNameRemoved := fmt.Sprintf("Server%d", serverIDRemoved)
+		removeServerInstance(serverNameRemoved)
+
+		serverNamesRemoved = append(serverNamesRemoved, serverNameRemoved)
+	}
+
+	response := RemoveResponseSuccess{
+		Message: map[string]interface{}{
+			"N":       len(serverIDs),
+			"servers": serverNamesRemoved,
+		},
+		Status: "successful",
+	}
+
+	json.NewEncoder(w).Encode(response)
+	w.WriteHeader(http.StatusOK)
+}
+
+func cleanupServers() {
+	fmt.Println("Cleaning up server instances...")
+
+	for _, server := range serverIDs {
 		stopCmd := exec.Command("sudo", "docker", "stop", fmt.Sprintf("Server%d", server))
 		removeCmd := exec.Command("sudo", "docker", "rm", fmt.Sprintf("Server%d", server))
 
@@ -370,7 +372,7 @@ func main() {
 	http.HandleFunc("/init", initHandler)
 	http.HandleFunc("/status", statusHandler)
 	http.HandleFunc("/add", addServersEndpoint)
-	// http.HandleFunc("/rm", removeServersEndpoint)
+	http.HandleFunc("/rm", removeServersEndpoint)
 
 	fmt.Println("Load Balancer running on port 5000")
 	log.Fatal(http.ListenAndServe(":5000", nil))

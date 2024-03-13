@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"sync"
@@ -102,6 +101,7 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Configured Database", "status": "success"})
 }
 
@@ -207,12 +207,15 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(AddResponseSuccess{
+	response := AddResponseSuccess{
 		N:       len(serverIDs),
 		Message: addServerMessage,
 		Status:  "successful",
-	})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 type RemoveRequest struct {
@@ -261,11 +264,13 @@ func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Servers) > req.N {
-		json.NewEncoder(w).Encode(RemoveResponseFailed{
+		resp := RemoveResponseFailed{
 			Message: "<Error> Length of server list is more than removable instances",
 			Status:  "failure",
-		})
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 
@@ -334,39 +339,23 @@ func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
 		Status: "successful",
 	}
 
-	json.NewEncoder(w).Encode(response)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-}
-
-func cleanupServers() {
-	fmt.Println("Cleaning up server instances...")
-
-	for _, server := range serverIDs {
-		stopCmd := exec.Command("sudo", "docker", "stop", fmt.Sprintf("Server%d", server))
-		removeCmd := exec.Command("sudo", "docker", "rm", fmt.Sprintf("Server%d", server))
-
-		if err := stopCmd.Run(); err != nil {
-			fmt.Printf("Failed to stop server '%d': %v", server, err)
-		}
-		if err := removeCmd.Run(); err != nil {
-			fmt.Printf("Failed to remove server '%d': %v", server, err)
-		}
-	}
+	json.NewEncoder(w).Encode(response)
 }
 
 func main() {
 	buildServerInstance()
 
-	// a channel to listen to OS signal - ctrl+C to exit
 	sigs := make(chan os.Signal, 1)
 	cleanupDone := make(chan bool)
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-sigs // termination signal
-		cleanupServers()
-		cleanupDone <- true // Signal that cleanup is done
+		<-sigs
+		cleanupServers(serverIDs)
+		cleanupDone <- true
 	}()
 
 	http.HandleFunc("/init", initHandler)
@@ -374,9 +363,8 @@ func main() {
 	http.HandleFunc("/add", addServersEndpoint)
 	http.HandleFunc("/rm", removeServersEndpoint)
 
-	fmt.Println("Load Balancer running on port 5000")
-	log.Fatal(http.ListenAndServe(":5000", nil))
+	log.Println("Load Balancer running on port 5000")
+	log.Fatalln(http.ListenAndServe(":5000", nil))
 
-	// Waiting for cleanup to be done before exiting
 	<-cleanupDone
 }

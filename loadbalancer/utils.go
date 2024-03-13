@@ -5,14 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
-type configPayload struct {
-	Schema SchemaConfig `json:"schema"`
-	Shards []string     `json:"shards"`
+func getNextServerID() int {
+	return rand.Intn(900000) + 100000
+}
+
+func getServerID(rawServerName string) int {
+	rawServerID := rawServerName[len("Server"):]
+	serverID, err := strconv.Atoi(rawServerID)
+	if err != nil {
+		return getNextServerID()
+	}
+	return serverID
 }
 
 func buildServerInstance() {
@@ -48,7 +58,7 @@ func getServerIP(hostname string) string {
 }
 
 func configNewServerInstance(serverID int, shards []string, schema SchemaConfig) {
-	payload := configPayload{
+	payload := ServerConfigPayload{
 		Schema: schema,
 		Shards: shards,
 	}
@@ -96,4 +106,27 @@ func cleanupServers(serverIDs []int) {
 			log.Printf("Failed to remove server '%d': %v\n", server, err)
 		}
 	}
+}
+
+func chooseRandomServerForRemoval(serverIDs []int, serverIDsRemoved []int) int {
+	if len(serverIDs)-len(serverIDsRemoved) <= 0 {
+		return -1
+	}
+
+	serverIDsAvailable := []int{}
+	for _, serverID := range serverIDs {
+		isPresent := false
+		for _, serverIDRemoved := range serverIDsRemoved {
+			if serverIDRemoved == serverID {
+				isPresent = true
+				break
+			}
+		}
+		if !isPresent {
+			serverIDsAvailable = append(serverIDsAvailable, serverID)
+		}
+	}
+
+	index := rand.Intn(len(serverIDsAvailable))
+	return serverIDsAvailable[index]
 }

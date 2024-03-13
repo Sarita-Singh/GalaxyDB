@@ -1,14 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 
@@ -18,32 +17,6 @@ import (
 const ServerDockerImageName = "galaxydb-server"
 const DockerNetworkName = "galaxydb-network"
 const ServerPort = 5000
-const N = 3
-
-type ShardTConfig struct {
-	StudIDLow int    `json:"Stud_id_low"`
-	ShardID   string `json:"Shard_id"`
-	ShardSize int    `json:"Shard_size"`
-	chm       *consistenthashmap.ConsistentHashMap
-	mutex     *sync.Mutex
-}
-
-type MapTConfig struct {
-	ShardID  string `json:"Shard_id"`
-	ServerID int    `json:"Server_id"`
-}
-
-type SchemaConfig struct {
-	Columns []string `json:"columns"`
-	Dtypes  []string `json:"dtypes"`
-}
-
-type InitRequest struct {
-	N       int                 `json:"N"`
-	Schema  SchemaConfig        `json:"schema"`
-	Shards  []ShardTConfig      `json:"shards"`
-	Servers map[string][]string `json:"servers"`
-}
 
 var (
 	schemaConfig  SchemaConfig
@@ -51,19 +24,6 @@ var (
 	mapTConfigs   []MapTConfig
 	serverIDs     []int
 )
-
-func getNextServerID() int {
-	return rand.Intn(900000) + 100000
-}
-
-func getServerID(rawServerName string) int {
-	rawServerID := rawServerName[len("Server"):]
-	serverID, err := strconv.Atoi(rawServerID)
-	if err != nil {
-		return getNextServerID()
-	}
-	return serverID
-}
 
 func initHandler(w http.ResponseWriter, r *http.Request) {
 	var req InitRequest
@@ -131,24 +91,7 @@ func statusHandler(w http.ResponseWriter, _ *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-type AddRequest struct {
-	N         int                 `json:"n"`
-	NewShards []ShardTConfig      `json:"new_shards"`
-	Servers   map[string][]string `json:"servers"` // ServerID to list of ShardIDs
-}
-
-type AddResponseSuccess struct {
-	N       int    `json:"N"`
-	Message string `json:"message"`
-	Status  string `json:"status"`
-}
-
-type AddResponseFailed struct {
-	Message string `json:"message"`
-	Status  string `json:"status"`
-}
-
-func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
+func addServersHandler(w http.ResponseWriter, r *http.Request) {
 	var req AddRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
@@ -218,45 +161,7 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-type RemoveRequest struct {
-	N       int      `json:"n"`
-	Servers []string `json:"servers"`
-}
-
-type RemoveResponseSuccess struct {
-	Message map[string]interface{} `json:"message"`
-	Status  string                 `json:"status"`
-}
-
-type RemoveResponseFailed struct {
-	Message string `json:"message"`
-	Status  string `json:"status"`
-}
-
-func chooseRandomServerForRemoval(serverIDsRemoved []int) int {
-	if len(serverIDs)-len(serverIDsRemoved) <= 0 {
-		return -1
-	}
-
-	serverIDsAvailable := []int{}
-	for _, serverID := range serverIDs {
-		isPresent := false
-		for _, serverIDRemoved := range serverIDsRemoved {
-			if serverIDRemoved == serverID {
-				isPresent = true
-				break
-			}
-		}
-		if !isPresent {
-			serverIDsAvailable = append(serverIDsAvailable, serverID)
-		}
-	}
-
-	index := rand.Intn(len(serverIDsAvailable))
-	return serverIDsAvailable[index]
-}
-
-func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
+func removeServersHandler(w http.ResponseWriter, r *http.Request) {
 	var req RemoveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
@@ -281,7 +186,7 @@ func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	additionalRemovalsNeeded := req.N - len(serverIDsRemoved)
 	for additionalRemovalsNeeded > 0 {
-		if serverID := chooseRandomServerForRemoval(serverIDsRemoved); serverID != -1 {
+		if serverID := chooseRandomServerForRemoval(serverIDs, serverIDsRemoved); serverID != -1 {
 			serverIDsRemoved = append(serverIDsRemoved, serverID)
 			additionalRemovalsNeeded -= 1
 		}
@@ -352,19 +257,26 @@ func main() {
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
+	http.HandleFunc("/init", initHandler)
+	http.HandleFunc("/status", statusHandler)
+	http.HandleFunc("/add", addServersHandler)
+	http.HandleFunc("/rm", removeServersHandler)
+
+	server := &http.Server{Addr: ":5000", Handler: nil}
+
 	go func() {
 		<-sigs
 		cleanupServers(serverIDs)
+		server.Shutdown(context.Background())
 		cleanupDone <- true
 	}()
 
-	http.HandleFunc("/init", initHandler)
-	http.HandleFunc("/status", statusHandler)
-	http.HandleFunc("/add", addServersEndpoint)
-	http.HandleFunc("/rm", removeServersEndpoint)
-
 	log.Println("Load Balancer running on port 5000")
-	log.Fatalln(http.ListenAndServe(":5000", nil))
+	err := server.ListenAndServe()
+	if err != http.ErrServerClosed {
+		log.Fatalln(err)
+	}
 
 	<-cleanupDone
+	os.Exit(0)
 }

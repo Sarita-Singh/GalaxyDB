@@ -27,6 +27,8 @@ COPY . .
 RUN chown -R $USER:$USER /lb
 USER $USER
 
+ENV GO_ENV=production
+
 # build
 RUN go build -o /lb/galaxydb-lb
 

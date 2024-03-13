@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -23,20 +22,23 @@ const DockerNetworkName = "galaxydb-network"
 const ServerPort = 5000
 const N = 3
 
-var chm = consistenthashmap.NewConsistentHashMap() // Initialize your consistent hash map
+type ShardTConfig struct {
+	StudIDLow int    `json:"Stud_id_low"`
+	ShardID   string `json:"Shard_id"`
+	ShardSize int    `json:"Shard_size"`
+	chm       *consistenthashmap.ConsistentHashMap
+	mutex     *sync.Mutex
+}
 
-// ServerConfig and ShardConfig structures represent the configuration
-// of servers and shards as provided in the init request.
+type MapTConfig struct {
+	ShardID  string `json:"Shard_id"`
+	ServerID int    `json:"Server_id"`
+}
+
 type ServerConfig struct {
 	ID       int      `json:"id"`
 	Hostname string   `json:"hostname"`
 	Shards   []string `json:"shards"`
-}
-
-type ShardConfig struct {
-	StudIDLow int    `json:"Stud_id_low"`
-	ShardID   string `json:"Shard_id"`
-	ShardSize int    `json:"Shard_size"`
 }
 
 type SchemaConfig struct {
@@ -47,21 +49,33 @@ type SchemaConfig struct {
 type InitRequest struct {
 	N       int                 `json:"N"`
 	Schema  SchemaConfig        `json:"schema"`
-	Shards  []ShardConfig       `json:"shards"`
+	Shards  []ShardTConfig      `json:"shards"`
 	Servers map[string][]string `json:"servers"`
 }
 
 var (
 	serverConfigs []ServerConfig
-	shardConfigs  []ShardConfig
-	serverMutex   sync.Mutex
+	shardTConfigs []ShardTConfig
+	mapTConfigs   []MapTConfig
 
 	configData struct {
 		Servers []ServerConfig `json:"servers"`
-		Shards  []ShardConfig  `json:"shards"`
+		Shards  []ShardTConfig `json:"shards"`
 	}
-	configMutex sync.RWMutex
 )
+
+func getNextServerID() int {
+	return rand.Intn(900000) + 100000
+}
+
+func getServerID(rawServerName string) int {
+	rawServerID := rawServerName[len("Server"):]
+	serverID, err := strconv.Atoi(rawServerID)
+	if err != nil {
+		return getNextServerID()
+	}
+	return serverID
+}
 
 func initHandler(w http.ResponseWriter, r *http.Request) {
 	var req InitRequest
@@ -70,59 +84,45 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	serverMutex.Lock()
-	configMutex.Lock() // Ensure thread safety
-	defer serverMutex.Unlock()
-	defer configMutex.Unlock()
+	shardTConfigs = req.Shards
 
-	// Convert map to slice for internal and configData storage
-	convertedServers := []ServerConfig{}
-	for serverName, shardIDs := range req.Servers {
-		convertedServer := ServerConfig{
-			Hostname: serverName,
-			ID:       getNextServerID(),
-			Shards:   shardIDs,
+	for rawServerName, shardIDs := range req.Servers {
+		serverID := getServerID(rawServerName)
+		for _, shardID := range shardIDs {
+			mapTConfigs = append(mapTConfigs, MapTConfig{ShardID: shardID, ServerID: serverID})
 		}
-		convertedServers = append(convertedServers, convertedServer)
+
+		spawnNewServerInstance(fmt.Sprintf("Server%d", serverID), serverID)
+		configNewServerInstance(serverID, shardIDs, req.Schema)
 	}
 
-	// Now you have a slice of ServerConfig from the map
-	serverConfigs = convertedServers
-	shardConfigs = req.Shards
-
-	// Update configData with converted slice and shards directly
-	configData.Servers = convertedServers
-	configData.Shards = req.Shards
-
-	// Initialize shards in the consistent hash map
 	for _, shard := range req.Shards {
-		var serversForShard []string
-		for _, server := range convertedServers {
-			for _, serverShard := range server.Shards {
-				if serverShard == shard.ShardID {
-					serversForShard = append(serversForShard, strconv.Itoa(server.ID))
-					break
-				}
+		newShardTConfig := shard
+
+		newShardTConfig.chm = &consistenthashmap.ConsistentHashMap{}
+		newShardTConfig.chm.Init()
+		for _, mapTConfig := range mapTConfigs {
+			if mapTConfig.ShardID == shard.ShardID {
+				newShardTConfig.chm.AddServer(mapTConfig.ServerID)
 			}
 		}
-		chm.AddShard(shard.ShardID, serversForShard)
+		newShardTConfig.mutex = &sync.Mutex{}
+
+		shardTConfigs = append(shardTConfigs, newShardTConfig)
 	}
 
-	// Respond with success
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"message": "Database initialized successfully", "status": "success"})
+	json.NewEncoder(w).Encode(map[string]string{"message": "Configured Database", "status": "success"})
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
-	configMutex.RLock() // Use read lock for concurrency safety
-	defer configMutex.RUnlock()
 
 	// Serve the stored configuration data
 	response := map[string]interface{}{
 		"N": len(configData.Servers), // Assuming "N" represents the number of servers
 		"schema": map[string][]string{
-			"columns": []string{"Stud_id", "Stud_name", "Stud_marks"},
-			"dtypes":  []string{"Number", "String", "String"},
+			"columns": {"Stud_id", "Stud_name", "Stud_marks"},
+			"dtypes":  {"Number", "String", "String"},
 		},
 		"shards":  configData.Shards,
 		"servers": configData.Servers,
@@ -135,7 +135,7 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 
 type AddRequest struct {
 	N         int                 `json:"n"`
-	NewShards []ShardConfig       `json:"new_shards"`
+	NewShards []ShardTConfig      `json:"new_shards"`
 	Servers   map[string][]string `json:"servers"` // ServerID to list of ShardIDs
 }
 
@@ -149,38 +149,12 @@ type AddMapResponse struct {
 	Status  string                 `json:"status"`
 }
 
-func spawnNewServerInstance(hostname string, id int) {
-	cmd := exec.Command("sudo", "docker", "build", "--tag", ServerDockerImageName, "/server")
-	err := cmd.Run()
-	if err != nil {
-		log.Fatalf("Failed to build server image: %v", err)
-	}
-
-	// Run the server Docker container
-	cmd = exec.Command("sudo", "docker", "run", "-d", "--name", hostname, "--network", DockerNetworkName, "-e", fmt.Sprintf("id=%d", id), fmt.Sprintf("%s:latest", ServerDockerImageName))
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	if err != nil {
-		// log.Fatalf("Failed to start new server instance: %v", err)
-		log.Printf("Failed to start new server instance: %v, stderr: %s", err, stderr.String())
-	}
-}
-
-func getNextServerID() int {
-	return rand.Intn(900000) + 100000
-}
-
 func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req AddRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
-
-	configMutex.Lock()
-	defer configMutex.Unlock()
 
 	// Sanity check: ensure the number of servers to add does not exceed the request count
 	if len(req.Servers) < req.N {
@@ -196,7 +170,7 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	// Handle adding new shards
 	for _, shard := range req.NewShards {
-		shardConfigs = append(shardConfigs, shard)
+		shardTConfigs = append(shardTConfigs, shard)
 		var serversForShard []string
 		for serverName, shardIDs := range req.Servers {
 			serverID := -1
@@ -213,7 +187,6 @@ func addServersEndpoint(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		chm.AddShard(shard.ShardID, serversForShard)
 	}
 
 	// Handle adding new servers
@@ -284,10 +257,6 @@ func removeServerInstance(hostname string) bool {
 	// Update the consistent hash map to remove the server's virtual nodes and shard associations
 	// chm.RemoveServer(strconv.Itoa(serverID))
 
-	// Lock global config data for thread-safe operation
-	configMutex.Lock()
-	defer configMutex.Unlock()
-
 	// Update serverConfigs to reflect removal
 	for i, serverConfig := range configData.Servers {
 		if serverConfig.ID == serverID {
@@ -314,9 +283,6 @@ func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
-
-	configMutex.Lock()
-	defer configMutex.Unlock()
 
 	// Sanity check: If the provided server list is longer than the number of servers to remove
 	if len(req.Servers) > req.N {
@@ -368,20 +334,37 @@ func removeServersEndpoint(w http.ResponseWriter, r *http.Request) {
 // cleanupServers stops and removes all server containers
 func cleanupServers() {
 	fmt.Println("Cleaning up server instances...")
-	for _, server := range configData.Servers {
-		stopCmd := exec.Command("sudo", "docker", "stop", server.Hostname)
-		removeCmd := exec.Command("sudo", "docker", "rm", server.Hostname)
+
+	servers := []int{}
+	for _, mapTConfig := range mapTConfigs {
+		contains := false
+		for _, server := range servers {
+			if server == mapTConfig.ServerID {
+				contains = true
+				break
+			}
+		}
+		if !contains {
+			servers = append(servers, mapTConfig.ServerID)
+		}
+	}
+
+	for _, server := range servers {
+		stopCmd := exec.Command("sudo", "docker", "stop", fmt.Sprintf("Server%d", server))
+		removeCmd := exec.Command("sudo", "docker", "rm", fmt.Sprintf("Server%d", server))
 
 		if err := stopCmd.Run(); err != nil {
-			fmt.Printf("Failed to stop server '%s': %v", server.Hostname, err)
+			fmt.Printf("Failed to stop server '%d': %v", server, err)
 		}
 		if err := removeCmd.Run(); err != nil {
-			fmt.Printf("Failed to remove server '%s': %v", server.Hostname, err)
+			fmt.Printf("Failed to remove server '%d': %v", server, err)
 		}
 	}
 }
 
 func main() {
+	buildServerInstance()
+
 	// a channel to listen to OS signal - ctrl+C to exit
 	sigs := make(chan os.Signal, 1)
 	cleanupDone := make(chan bool)

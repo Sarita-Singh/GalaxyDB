@@ -393,6 +393,64 @@ func WriteHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func updateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req UpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, shardTConfig := range shardTConfigs {
+		if req.StudID >= shardTConfig.StudIDLow && req.StudID <= shardTConfig.StudIDLow+shardTConfig.ShardSize {
+			shardTConfig.mutex.Lock()
+
+			payload := ServerUpdatePayload{
+				Shard:  shardTConfig.ShardID,
+				StudID: req.StudID,
+				Data:   req.Data,
+			}
+			payloadData, err := json.Marshal(payload)
+			if err != nil {
+				log.Fatalln("Error marshaling JSON: ", err)
+				return
+			}
+
+			for _, mapTConfig := range mapTConfigs {
+				if mapTConfig.ShardID == shardTConfig.ShardID {
+					req, err := http.NewRequest("PUT", "http://"+getServerIP(fmt.Sprintf("Server%d", mapTConfig.ServerID))+":"+fmt.Sprint(ServerPort)+"/update", bytes.NewBuffer(payloadData))
+					if err != nil {
+						log.Println("Error updating Server:", err)
+						return
+					}
+					client := &http.Client{}
+					resp, err := client.Do(req)
+					if err != nil {
+						log.Println("Error updating Server:", err)
+						return
+					}
+					resp.Body.Close()
+				}
+			}
+
+			shardTConfig.mutex.Unlock()
+		}
+	}
+
+	response := UpdateResponse{
+		Status:  "success",
+		Message: fmt.Sprintf("Data entry for Stud_id: %d updated", req.StudID),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
 func main() {
 	buildServerInstance()
 
@@ -407,6 +465,7 @@ func main() {
 	http.HandleFunc("/rm", removeServersHandler)
 	http.HandleFunc("/read", readHandler)
 	http.HandleFunc("/write", WriteHandler)
+	http.HandleFunc("/update", updateHandler)
 
 	server := &http.Server{Addr: ":5000", Handler: nil}
 

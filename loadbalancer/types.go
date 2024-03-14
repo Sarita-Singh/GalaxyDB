@@ -121,3 +121,19 @@ type ServerWriteResponse struct {
 	Message      string `json:"message"`
 	CurrentIndex int    `json:"current_idx"`
 }
+
+type UpdateRequest struct {
+	StudID int   `json:"Stud_id"`
+	Data   StudT `json:"data"`
+}
+
+type UpdateResponse struct {
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
+
+type ServerUpdatePayload struct {
+	Shard  string `json:"shard"`
+	StudID int    `json:"Stud_id"`
+	Data   StudT  `json:"data"`
+}

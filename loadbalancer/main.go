@@ -451,6 +451,63 @@ func updateHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+func deleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req DeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, shardTConfig := range shardTConfigs {
+		if req.StudID >= shardTConfig.StudIDLow && req.StudID <= shardTConfig.StudIDLow+shardTConfig.ShardSize {
+			shardTConfig.mutex.Lock()
+
+			payload := ServerDeletePayload{
+				Shard:  shardTConfig.ShardID,
+				StudID: req.StudID,
+			}
+			payloadData, err := json.Marshal(payload)
+			if err != nil {
+				log.Fatalln("Error marshaling JSON: ", err)
+				return
+			}
+
+			for _, mapTConfig := range mapTConfigs {
+				if mapTConfig.ShardID == shardTConfig.ShardID {
+					req, err := http.NewRequest("DELETE", "http://"+getServerIP(fmt.Sprintf("Server%d", mapTConfig.ServerID))+":"+fmt.Sprint(ServerPort)+"/delete", bytes.NewBuffer(payloadData))
+					if err != nil {
+						log.Println("Error deleting from Server:", err)
+						return
+					}
+					client := &http.Client{}
+					resp, err := client.Do(req)
+					if err != nil {
+						log.Println("Error deleting from Server:", err)
+						return
+					}
+					resp.Body.Close()
+				}
+			}
+
+			shardTConfig.mutex.Unlock()
+		}
+	}
+
+	response := DeleteResponse{
+		Message: fmt.Sprintf("Data entry with Stud_id: %d removed from all replicas", req.StudID),
+		Status:  "success",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
 func main() {
 	buildServerInstance()
 
@@ -466,6 +523,7 @@ func main() {
 	http.HandleFunc("/read", readHandler)
 	http.HandleFunc("/write", WriteHandler)
 	http.HandleFunc("/update", updateHandler)
+	http.HandleFunc("/del", deleteHandler)
 
 	server := &http.Server{Addr: ":5000", Handler: nil}
 

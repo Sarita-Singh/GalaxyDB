@@ -137,3 +137,17 @@ type ServerUpdatePayload struct {
 	StudID int    `json:"Stud_id"`
 	Data   StudT  `json:"data"`
 }
+
+type DeleteRequest struct {
+	StudID int `json:"Stud_id"`
+}
+
+type DeleteResponse struct {
+	Message string `json:"message"`
+	Status  string `json:"status"`
+}
+
+type ServerDeletePayload struct {
+	Shard  string `json:"shard"`
+	StudID int    `json:"Stud_id"`
+}

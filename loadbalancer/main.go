@@ -527,40 +527,36 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, shardTConfig := range shardTConfigs {
-		if req.StudID >= shardTConfig.StudIDLow && req.StudID <= shardTConfig.StudIDLow+shardTConfig.ShardSize {
-			shardTConfig.mutex.Lock()
+	shardID := getShardIDFromStudID(db, req.StudID)
+	shardTConfigs[shardID].mutex.Lock()
 
-			payload := ServerDeletePayload{
-				Shard:  shardTConfig.ShardID,
-				StudID: req.StudID,
-			}
-			payloadData, err := json.Marshal(payload)
-			if err != nil {
-				log.Fatalln("Error marshaling JSON: ", err)
-				return
-			}
-
-			for _, mapTConfig := range mapTConfigs {
-				if mapTConfig.ShardID == shardTConfig.ShardID {
-					req, err := http.NewRequest("DELETE", "http://"+getServerIP(fmt.Sprintf("Server%d", mapTConfig.ServerID))+":"+fmt.Sprint(ServerPort)+"/delete", bytes.NewBuffer(payloadData))
-					if err != nil {
-						log.Println("Error deleting from Server:", err)
-						return
-					}
-					client := &http.Client{}
-					resp, err := client.Do(req)
-					if err != nil {
-						log.Println("Error deleting from Server:", err)
-						return
-					}
-					resp.Body.Close()
-				}
-			}
-
-			shardTConfig.mutex.Unlock()
-		}
+	payload := ServerDeletePayload{
+		Shard:  shardID,
+		StudID: req.StudID,
 	}
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		log.Fatalln("Error marshaling JSON: ", err)
+		return
+	}
+
+	serverIDs := getServerIDsForShard(db, shardID)
+	for _, serverID := range serverIDs {
+		req, err := http.NewRequest("DELETE", "http://"+getServerIP(fmt.Sprintf("Server%d", serverID))+":"+fmt.Sprint(SERVER_PORT)+"/delete", bytes.NewBuffer(payloadData))
+		if err != nil {
+			log.Println("Error deleting from Server:", err)
+			return
+		}
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Println("Error deleting from Server:", err)
+			return
+		}
+		resp.Body.Close()
+	}
+
+	shardTConfigs[shardID].mutex.Unlock()
 
 	response := DeleteResponse{
 		Message: fmt.Sprintf("Data entry with Stud_id: %d removed from all replicas", req.StudID),

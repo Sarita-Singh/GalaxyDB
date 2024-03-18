@@ -7,17 +7,14 @@ import (
 )
 
 type ShardTConfig struct {
+	chm   *consistenthashmap.ConsistentHashMap
+	mutex *sync.Mutex
+}
+
+type Shard struct {
 	StudIDLow int    `json:"Stud_id_low"`
 	ShardID   string `json:"Shard_id"`
 	ShardSize int    `json:"Shard_size"`
-	validIdx  int
-	chm       *consistenthashmap.ConsistentHashMap
-	mutex     *sync.Mutex
-}
-
-type MapTConfig struct {
-	ShardID  string `json:"Shard_id"`
-	ServerID int    `json:"Server_id"`
 }
 
 type SchemaConfig struct {
@@ -28,13 +25,13 @@ type SchemaConfig struct {
 type InitRequest struct {
 	N       int                 `json:"N"`
 	Schema  SchemaConfig        `json:"schema"`
-	Shards  []ShardTConfig      `json:"shards"`
+	Shards  []Shard             `json:"shards"`
 	Servers map[string][]string `json:"servers"`
 }
 
 type AddRequest struct {
 	N         int                 `json:"n"`
-	NewShards []ShardTConfig      `json:"new_shards"`
+	NewShards []Shard             `json:"new_shards"`
 	Servers   map[string][]string `json:"servers"`
 }
 

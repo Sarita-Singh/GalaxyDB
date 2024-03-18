@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,18 +14,16 @@ import (
 	"sync"
 	"syscall"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/Sarita-Singh/galaxyDB/loadbalancer/internal/consistenthashmap"
 )
 
-const ServerDockerImageName = "galaxydb-server"
-const DockerNetworkName = "galaxydb-network"
-const ServerPort = 5000
-
 var (
 	schemaConfig  SchemaConfig
-	shardTConfigs []ShardTConfig
-	mapTConfigs   []MapTConfig
+	shardTConfigs map[string]ShardTConfig
 	serverIDs     []int
+	db            *sql.DB
 )
 
 func initHandler(w http.ResponseWriter, r *http.Request) {
@@ -38,28 +37,46 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 
 	for rawServerName, shardIDs := range req.Servers {
 		serverID := getServerID(rawServerName)
+
 		for _, shardID := range shardIDs {
-			mapTConfigs = append(mapTConfigs, MapTConfig{ShardID: shardID, ServerID: serverID})
+			_, err := db.Exec("INSERT INTO mapt (shard_id, server_id) VALUES (?, ?);", shardID, serverID)
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 
 		serverIDs = append(serverIDs, serverID)
+
 		spawnNewServerInstance(fmt.Sprintf("Server%d", serverID), serverID)
 		configNewServerInstance(serverID, shardIDs, req.Schema)
 	}
 
 	for _, shard := range req.Shards {
-		newShardTConfig := shard
-		newShardTConfig.validIdx = 0
-		newShardTConfig.chm = &consistenthashmap.ConsistentHashMap{}
-		newShardTConfig.chm.Init()
-		for _, mapTConfig := range mapTConfigs {
-			if mapTConfig.ShardID == shard.ShardID {
-				newShardTConfig.chm.AddServer(mapTConfig.ServerID)
-			}
+		_, err := db.Exec("INSERT INTO shardt (stud_id_low, shard_id, shard_size, valid_idx) VALUES (?, ?, ?, ?);", shard.StudIDLow, shard.ShardID, shard.ShardSize, 0)
+		if err != nil {
+			log.Fatal(err)
 		}
-		newShardTConfig.mutex = &sync.Mutex{}
 
-		shardTConfigs = append(shardTConfigs, newShardTConfig)
+		config := shardTConfigs[shard.ShardID]
+		config.chm = &consistenthashmap.ConsistentHashMap{}
+		config.mutex = &sync.Mutex{}
+		shardTConfigs[shard.ShardID] = config
+
+		shardTConfigs[shard.ShardID].chm.Init()
+		rows, err := db.Query("SELECT server_id FROM mapt WHERE shard_id = ?;", shard.ShardID)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var serverID int
+			err = rows.Scan(&serverID)
+			if err != nil {
+				log.Fatal(err)
+			}
+			shardTConfigs[shard.ShardID].chm.AddServer(serverID)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -68,23 +85,48 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func statusHandler(w http.ResponseWriter, _ *http.Request) {
-
 	servers := make(map[string][]string)
 
-	for _, mapTConfig := range mapTConfigs {
-		serverName := fmt.Sprintf("Server%d", mapTConfig.ServerID)
-		_, contains := servers[serverName]
-		if !contains {
-			servers[serverName] = []string{mapTConfig.ShardID}
-		} else {
-			servers[serverName] = append(servers[serverName], mapTConfig.ShardID)
+	for _, serverID := range serverIDs {
+		serverName := fmt.Sprintf("Server%d", serverID)
+		servers[serverName] = []string{}
+
+		rows, err := db.Query("SELECT shard_id FROM mapt WHERE server_id = ?;", serverID)
+		if err != nil {
+			log.Fatal(err)
 		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var shardID string
+			err = rows.Scan(&shardID)
+			if err != nil {
+				log.Fatal(err)
+			}
+			servers[serverName] = append(servers[serverName], shardID)
+		}
+	}
+
+	shards := []Shard{}
+	rows, err := db.Query("SELECT stud_id_low, shard_id, shard_size FROM shardt;")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var shard Shard
+		err = rows.Scan(&shard.StudIDLow, &shard.ShardID, &shard.ShardSize)
+		if err != nil {
+			log.Fatal(err)
+		}
+		shards = append(shards, shard)
 	}
 
 	response := map[string]interface{}{
 		"N":       len(servers),
 		"schema":  schemaConfig,
-		"shards":  shardTConfigs,
+		"shards":  shards,
 		"servers": servers,
 	}
 
@@ -116,28 +158,46 @@ func addServersHandler(w http.ResponseWriter, r *http.Request) {
 	for rawServerName, shardIDs := range req.Servers {
 		serverID := getServerID(rawServerName)
 		serverIDsAdded = append(serverIDsAdded, serverID)
+
 		for _, shardID := range shardIDs {
-			mapTConfigs = append(mapTConfigs, MapTConfig{ShardID: shardID, ServerID: serverID})
+			_, err := db.Exec("INSERT INTO mapt (shard_id, server_id) VALUES (?, ?);", shardID, serverID)
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 
 		serverIDs = append(serverIDs, serverID)
+
 		spawnNewServerInstance(fmt.Sprintf("Server%d", serverID), serverID)
 		configNewServerInstance(serverID, shardIDs, schemaConfig)
 	}
 
 	for _, shard := range req.NewShards {
-		newShardTConfig := shard
-		newShardTConfig.validIdx = 0
-		newShardTConfig.chm = &consistenthashmap.ConsistentHashMap{}
-		newShardTConfig.chm.Init()
-		for _, mapTConfig := range mapTConfigs {
-			if mapTConfig.ShardID == shard.ShardID {
-				newShardTConfig.chm.AddServer(mapTConfig.ServerID)
-			}
+		_, err := db.Exec("INSERT INTO shardt (stud_id_low, shard_id, shard_size, valid_idx) VALUES (?, ?, ?, ?);", shard.StudIDLow, shard.ShardID, shard.ShardSize, 0)
+		if err != nil {
+			log.Fatal(err)
 		}
-		newShardTConfig.mutex = &sync.Mutex{}
 
-		shardTConfigs = append(shardTConfigs, newShardTConfig)
+		config := shardTConfigs[shard.ShardID]
+		config.chm = &consistenthashmap.ConsistentHashMap{}
+		config.mutex = &sync.Mutex{}
+		shardTConfigs[shard.ShardID] = config
+
+		shardTConfigs[shard.ShardID].chm.Init()
+		rows, err := db.Query("SELECT server_id FROM mapt WHERE shard_id = ?;", shard.ShardID)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var serverID int
+			err = rows.Scan(&serverID)
+			if err != nil {
+				log.Fatal(err)
+			}
+			shardTConfigs[shard.ShardID].chm.AddServer(serverID)
+		}
 	}
 
 	addServerMessage := "Add "
@@ -194,26 +254,32 @@ func removeServersHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newMapTConfigs := []MapTConfig{}
-	for _, mapTConfig := range mapTConfigs {
-		isPresent := false
-		for _, serverIDRemoved := range serverIDsRemoved {
-			if mapTConfig.ServerID == serverIDRemoved {
-				isPresent = true
-				break
-			}
+	for _, serverIDRemoved := range serverIDsRemoved {
+		shardIDsRemoved := []string{}
+		rows, err := db.Query("SELECT shard_id FROM mapt WHERE server_id = ?;", serverIDRemoved)
+		if err != nil {
+			log.Fatal(err)
 		}
-		if isPresent {
-			for _, shardTConfig := range shardTConfigs {
-				if shardTConfig.ShardID == mapTConfig.ShardID {
-					shardTConfig.chm.RemoveServer(mapTConfig.ServerID)
-				}
+		defer rows.Close()
+
+		for rows.Next() {
+			var shardID string
+			err = rows.Scan(&shardID)
+			if err != nil {
+				log.Fatal(err)
 			}
-		} else {
-			newMapTConfigs = append(newMapTConfigs, mapTConfig)
+			shardIDsRemoved = append(shardIDsRemoved, shardID)
+		}
+
+		for _, shardIDRemoved := range shardIDsRemoved {
+			shardTConfigs[shardIDRemoved].chm.RemoveServer(serverIDRemoved)
+		}
+
+		_, err = db.Exec("DELETE FROM mapt WHERE server_id = ?;", serverIDRemoved)
+		if err != nil {
+			log.Fatal(err)
 		}
 	}
-	mapTConfigs = newMapTConfigs
 
 	newServerIDs := []int{}
 	for _, serverID := range serverIDs {
@@ -264,16 +330,22 @@ func readHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shardIDsQueried := []string{}
-	for _, shardTConfig := range shardTConfigs {
-		if (shardTConfig.StudIDLow >= req.StudID.Low && shardTConfig.StudIDLow+shardTConfig.ShardSize <= req.StudID.High) ||
-			(req.StudID.Low >= shardTConfig.StudIDLow && req.StudID.Low <= shardTConfig.StudIDLow+shardTConfig.ShardSize) ||
-			(req.StudID.High >= shardTConfig.StudIDLow && req.StudID.High <= shardTConfig.StudIDLow+shardTConfig.ShardSize) {
-			shardIDsQueried = append(shardIDsQueried, shardTConfig.ShardID)
+	rows, err := db.Query("SELECT shard_id FROM shardt WHERE (stud_id_low BETWEEN ? AND ?) OR (stud_id_low+shard_size BETWEEN ? AND ?);", req.StudID.Low, req.StudID.High, req.StudID.Low, req.StudID.High)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var shardID string
+		err = rows.Scan(&shardID)
+		if err != nil {
+			log.Fatal(err)
 		}
+		shardIDsQueried = append(shardIDsQueried, shardID)
 	}
 
 	var studData []StudT
-
 	for _, shardIDQueried := range shardIDsQueried {
 		payload := ServerReadPayload{
 			Shard:  shardIDQueried,
@@ -285,28 +357,24 @@ func readHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		for _, shardTConfig := range shardTConfigs {
-			if shardTConfig.ShardID == shardIDQueried {
-				serverID := shardTConfig.chm.GetServerForRequest(getRandomID())
+		serverID := shardTConfigs[shardIDQueried].chm.GetServerForRequest(getRandomID())
 
-				resp, err := http.Post("http://"+getServerIP(fmt.Sprintf("Server%d", serverID))+":"+fmt.Sprint(ServerPort)+"/read", "application/json", bytes.NewBuffer(payloadData))
-				if err != nil {
-					log.Println("Error reading from Server:", err)
-					return
-				}
-
-				body, err := io.ReadAll(resp.Body)
-				if err != nil {
-					log.Println("Error reading response body:", err)
-				}
-
-				var respData ServerReadResponse
-				json.Unmarshal(body, &respData)
-				resp.Body.Close()
-
-				studData = append(studData, respData.Data...)
-			}
+		resp, err := http.Post("http://"+getServerIP(fmt.Sprintf("Server%d", serverID))+":"+fmt.Sprint(SERVER_PORT)+"/read", "application/json", bytes.NewBuffer(payloadData))
+		if err != nil {
+			log.Println("Error reading from Server:", err)
+			return
 		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Println("Error reading response body:", err)
+		}
+
+		var respData ServerReadResponse
+		json.Unmarshal(body, &respData)
+		resp.Body.Close()
+
+		studData = append(studData, respData.Data...)
 	}
 
 	response := ReadResponse{
@@ -332,55 +400,57 @@ func WriteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, shardTConfig := range shardTConfigs {
-		var studDataToWrite []StudT
-		for _, studData := range req.Data {
-			if studData.StudID >= shardTConfig.StudIDLow && studData.StudID <= shardTConfig.StudIDLow+shardTConfig.ShardSize {
-				studDataToWrite = append(studDataToWrite, studData)
-			}
+	studDataToWrite := map[string][]StudT{}
+	for _, studData := range req.Data {
+		shardID := getShardIDFromStudID(db, studData.StudID)
+		studDataToWrite[shardID] = append(studDataToWrite[shardID], studData)
+	}
+
+	for shardID, studData := range studDataToWrite {
+		shardTConfigs[shardID].mutex.Lock()
+
+		currentIndex := getValidIDx(db, shardID)
+
+		payload := ServerWritePayload{
+			Shard:        shardID,
+			Data:         studData,
+			CurrentIndex: currentIndex,
+		}
+		payloadData, err := json.Marshal(payload)
+		if err != nil {
+			log.Fatalln("Error marshaling JSON: ", err)
+			return
 		}
 
-		if len(studDataToWrite) > 0 {
-			shardTConfig.mutex.Lock()
-
-			payload := ServerWritePayload{
-				Shard:        shardTConfig.ShardID,
-				Data:         studDataToWrite,
-				CurrentIndex: shardTConfig.validIdx,
-			}
-			payloadData, err := json.Marshal(payload)
+		serverIDs := getServerIDsForShard(db, shardID)
+		for _, serverID := range serverIDs {
+			resp, err := http.Post("http://"+getServerIP(fmt.Sprintf("Server%d", serverID))+":"+fmt.Sprint(SERVER_PORT)+"/write", "application/json", bytes.NewBuffer(payloadData))
 			if err != nil {
-				log.Fatalln("Error marshaling JSON: ", err)
+				log.Println("Error writing to Server:", err)
 				return
 			}
 
-			for _, mapTConfig := range mapTConfigs {
-				if mapTConfig.ShardID == shardTConfig.ShardID {
-					resp, err := http.Post("http://"+getServerIP(fmt.Sprintf("Server%d", mapTConfig.ServerID))+":"+fmt.Sprint(ServerPort)+"/write", "application/json", bytes.NewBuffer(payloadData))
-					if err != nil {
-						log.Println("Error writing to Server:", err)
-						return
-					}
-
-					body, err := io.ReadAll(resp.Body)
-					if err != nil {
-						log.Println("Error reading response body:", err)
-					}
-
-					var respData ServerWriteResponse
-					json.Unmarshal(body, &respData)
-					resp.Body.Close()
-
-					if respData.CurrentIndex != shardTConfig.validIdx+len(studDataToWrite) {
-						log.Println("Error writing to Server: Invalid Index")
-						return
-					}
-				}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Println("Error reading response body:", err)
 			}
 
-			shardTConfig.validIdx += len(studDataToWrite)
-			shardTConfig.mutex.Unlock()
+			var respData ServerWriteResponse
+			json.Unmarshal(body, &respData)
+			resp.Body.Close()
+
+			if respData.CurrentIndex != currentIndex+len(studData) {
+				log.Println("Error writing to Server: Invalid Index")
+				return
+			}
 		}
+
+		_, err = db.Exec("UPDATE shardt SET valid_idx = ? WHERE shard_id = ?;", currentIndex+len(studData), shardID)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		shardTConfigs[shardID].mutex.Unlock()
 	}
 
 	response := WriteResponse{
@@ -405,40 +475,34 @@ func updateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, shardTConfig := range shardTConfigs {
-		if req.StudID >= shardTConfig.StudIDLow && req.StudID <= shardTConfig.StudIDLow+shardTConfig.ShardSize {
-			shardTConfig.mutex.Lock()
+	shardID := getShardIDFromStudID(db, req.StudID)
+	shardTConfigs[shardID].mutex.Lock()
 
-			payload := ServerUpdatePayload{
-				Shard:  shardTConfig.ShardID,
-				StudID: req.StudID,
-				Data:   req.Data,
-			}
-			payloadData, err := json.Marshal(payload)
-			if err != nil {
-				log.Fatalln("Error marshaling JSON: ", err)
-				return
-			}
+	payload := ServerUpdatePayload{
+		Shard:  shardID,
+		StudID: req.StudID,
+		Data:   req.Data,
+	}
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		log.Fatalln("Error marshaling JSON: ", err)
+		return
+	}
 
-			for _, mapTConfig := range mapTConfigs {
-				if mapTConfig.ShardID == shardTConfig.ShardID {
-					req, err := http.NewRequest("PUT", "http://"+getServerIP(fmt.Sprintf("Server%d", mapTConfig.ServerID))+":"+fmt.Sprint(ServerPort)+"/update", bytes.NewBuffer(payloadData))
-					if err != nil {
-						log.Println("Error updating Server:", err)
-						return
-					}
-					client := &http.Client{}
-					resp, err := client.Do(req)
-					if err != nil {
-						log.Println("Error updating Server:", err)
-						return
-					}
-					resp.Body.Close()
-				}
-			}
-
-			shardTConfig.mutex.Unlock()
+	serverIDs := getServerIDsForShard(db, shardID)
+	for _, serverID := range serverIDs {
+		req, err := http.NewRequest("PUT", "http://"+getServerIP(fmt.Sprintf("Server%d", serverID))+":"+fmt.Sprint(SERVER_PORT)+"/update", bytes.NewBuffer(payloadData))
+		if err != nil {
+			log.Println("Error updating Server:", err)
+			return
 		}
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Println("Error updating Server:", err)
+			return
+		}
+		resp.Body.Close()
 	}
 
 	response := UpdateResponse{
@@ -516,6 +580,20 @@ func main() {
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
+	var err error
+	db, err = sql.Open("sqlite3", "galaxy-lb.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(INIT_DB)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	shardTConfigs = make(map[string]ShardTConfig)
+
 	http.HandleFunc("/init", initHandler)
 	http.HandleFunc("/status", statusHandler)
 	http.HandleFunc("/add", addServersHandler)
@@ -535,7 +613,7 @@ func main() {
 	}()
 
 	log.Println("Load Balancer running on port 5000")
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != http.ErrServerClosed {
 		log.Fatalln(err)
 	}

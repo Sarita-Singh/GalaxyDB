@@ -30,7 +30,8 @@ USER $USER
 ENV GO_ENV=production
 
 # build
-RUN go build -o /lb/galaxydb-lb
+RUN go mod download
+RUN CGO_ENABLED=1 GOOS=linux go build -o /lb/galaxydb-lb -a -ldflags '-linkmode external -extldflags "-static"' .
 
 # the application is going to listen in the port 5000
 EXPOSE 5000

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -35,7 +36,7 @@ func buildServerInstance() {
 		serverPath = "../server"
 	}
 
-	cmd := exec.Command("sudo", "docker", "build", "--tag", ServerDockerImageName, serverPath)
+	cmd := exec.Command("sudo", "docker", "build", "--tag", SERVER_DOCKER_IMAGE_NAME, serverPath)
 	err := cmd.Run()
 	if err != nil {
 		log.Fatalln("Failed to build server image: ", err)
@@ -45,7 +46,7 @@ func buildServerInstance() {
 }
 
 func spawnNewServerInstance(hostname string, id int) {
-	cmd := exec.Command("sudo", "docker", "run", "-d", "--name", hostname, "--network", DockerNetworkName, "-e", fmt.Sprintf("id=%d", id), fmt.Sprintf("%s:latest", ServerDockerImageName))
+	cmd := exec.Command("sudo", "docker", "run", "-d", "--name", hostname, "--network", DOCKER_NETWORK_NAME, "-e", fmt.Sprintf("id=%d", id), fmt.Sprintf("%s:latest", SERVER_DOCKER_IMAGE_NAME))
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -77,7 +78,7 @@ func configNewServerInstance(serverID int, shards []string, schema SchemaConfig)
 		return
 	}
 
-	resp, err := http.Post("http://"+getServerIP(fmt.Sprintf("Server%d", serverID))+":"+fmt.Sprint(ServerPort)+"/config", "application/json", bytes.NewBuffer(payloadData))
+	resp, err := http.Post("http://"+getServerIP(fmt.Sprintf("Server%d", serverID))+":"+fmt.Sprint(SERVER_PORT)+"/config", "application/json", bytes.NewBuffer(payloadData))
 	if err != nil {
 		log.Println("Error configuring Server:", err)
 		return
@@ -138,4 +139,60 @@ func chooseRandomServerForRemoval(serverIDs []int, serverIDsRemoved []int) int {
 
 	index := rand.Intn(len(serverIDsAvailable))
 	return serverIDsAvailable[index]
+}
+
+func getShardIDFromStudID(db *sql.DB, studID int) string {
+	row, err := db.Query("SELECT shard_id FROM shardt WHERE ? BETWEEN stud_id_low AND stud_id_low+shard_size", studID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer row.Close()
+
+	var shardID string
+	for row.Next() {
+		err := row.Scan(&shardID)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	return shardID
+}
+
+func getValidIDx(db *sql.DB, shardID string) int {
+	row, err := db.Query("SELECT valid_idx FROM shardt WHERE shard_id=?", shardID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer row.Close()
+
+	var validIDx int
+	for row.Next() {
+		err := row.Scan(&validIDx)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	return validIDx
+}
+
+func getServerIDsForShard(db *sql.DB, shardID string) []int {
+	row, err := db.Query("SELECT server_id FROM mapt WHERE shard_id=?", shardID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer row.Close()
+
+	var serverID int
+	serverIDs := []int{}
+	for row.Next() {
+		err := row.Scan(&serverID)
+		if err != nil {
+			log.Fatal(err)
+		}
+		serverIDs = append(serverIDs, serverID)
+	}
+
+	return serverIDs
 }

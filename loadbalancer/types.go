@@ -148,3 +148,9 @@ type ServerDeletePayload struct {
 	Shard  string `json:"shard"`
 	StudID int    `json:"Stud_id"`
 }
+
+type ServerCopyPayload struct {
+	Shards []string `json:"shards"`
+}
+
+type ServerCopyResponse map[string][]StudT

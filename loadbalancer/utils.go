@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func getRandomID() int {
@@ -195,4 +197,145 @@ func getServerIDsForShard(db *sql.DB, shardID string) []int {
 	}
 
 	return serverIDs
+}
+
+func checkHeartbeat(serverID int, serverDown chan<- int) {
+	for {
+		isPresent := false
+		for _, server := range serverIDs {
+			if server == serverID {
+				isPresent = true
+				break
+			}
+		}
+		if !isPresent {
+			return
+		}
+		serverIP := getServerIP(fmt.Sprintf("Server%d", serverID))
+		resp, err := http.Get("http://" + serverIP + ":" + fmt.Sprint(SERVER_PORT) + "/heartbeat")
+		if len(serverIP) == 0 || err != nil || resp.StatusCode != http.StatusOK {
+			fmt.Printf("Server%d is down!\n", serverID)
+			serverDown <- serverID
+			return
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func monitorServers() {
+	for _, server := range serverIDs {
+		go checkHeartbeat(server, serverDown)
+	}
+
+	for {
+		downServerID := <-serverDown
+		newServerID := getRandomID()
+
+		fmt.Printf("Restarting Server%d as Server%d\n", downServerID, newServerID)
+		spawnNewServerInstance(fmt.Sprintf("Server%d", newServerID), newServerID)
+
+		rows, err := db.Query("SELECT shard_id FROM mapt WHERE server_id=?", downServerID)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		shardIDs := []string{}
+		for rows.Next() {
+			var shardID string
+			err := rows.Scan(&shardID)
+			if err != nil {
+				log.Fatal(err)
+			}
+			shardIDs = append(shardIDs, shardID)
+		}
+		rows.Close()
+
+		configNewServerInstance(newServerID, shardIDs, schemaConfig)
+
+		for _, shardID := range shardIDs {
+			shardTConfigs[shardID].mutex.Lock()
+			shardTConfigs[shardID].chm.RemoveServer(downServerID)
+
+			payload := ServerCopyPayload{
+				Shards: []string{shardID},
+			}
+			payloadData, err := json.Marshal(payload)
+			if err != nil {
+				log.Println("Error marshaling JSON: ", err)
+			}
+
+			existingServerID := shardTConfigs[shardID].chm.GetServerForRequest(getRandomID())
+
+			req, err := http.NewRequest("GET", "http://"+getServerIP(fmt.Sprintf("Server%d", existingServerID))+":"+fmt.Sprint(SERVER_PORT)+"/copy", bytes.NewBuffer(payloadData))
+			if err != nil {
+				log.Println("Error copying from Server:", err)
+			}
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Println("Error copying from Server:", err)
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Println("Error reading response body:", err)
+			}
+
+			var respData ServerCopyResponse
+			json.Unmarshal(body, &respData)
+			resp.Body.Close()
+
+			shardData := respData[shardID]
+
+			valid_idx := getValidIDx(db, shardID)
+			curr_idx := valid_idx - len(shardData)
+
+			payloadWrite := ServerWritePayload{
+				Shard:        shardID,
+				CurrentIndex: curr_idx,
+				Data:         shardData,
+			}
+			payloadData, err = json.Marshal(payloadWrite)
+			if err != nil {
+				log.Println("Error marshaling JSON: ", err)
+			}
+
+			resp, err = http.Post("http://"+getServerIP(fmt.Sprintf("Server%d", newServerID))+":"+fmt.Sprint(SERVER_PORT)+"/write", "application/json", bytes.NewBuffer(payloadData))
+			if err != nil {
+				log.Println("Error writing to Server:", err)
+			}
+
+			body, err = io.ReadAll(resp.Body)
+			if err != nil {
+				log.Println("Error reading response body:", err)
+			}
+
+			var respDataWrite ServerWriteResponse
+			json.Unmarshal(body, &respDataWrite)
+			resp.Body.Close()
+
+			if respDataWrite.CurrentIndex != valid_idx {
+				log.Println("Error writing to Server: Invalid Index")
+			}
+
+			shardTConfigs[shardID].chm.AddServer(newServerID)
+			shardTConfigs[shardID].mutex.Unlock()
+		}
+
+		_, err = db.Exec("UPDATE mapt SET server_id=? WHERE server_id=?", newServerID, downServerID)
+		if err != nil {
+			log.Println("Error updating mapt: ", err)
+		}
+
+		newServerIDs := []int{}
+		for _, serverID := range serverIDs {
+			if serverID != downServerID {
+				newServerIDs = append(newServerIDs, serverID)
+			}
+		}
+		newServerIDs = append(newServerIDs, newServerID)
+		serverIDs = newServerIDs
+
+		go checkHeartbeat(newServerID, serverDown)
+	}
 }

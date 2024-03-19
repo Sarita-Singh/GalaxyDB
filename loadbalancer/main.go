@@ -24,6 +24,7 @@ var (
 	shardTConfigs map[string]ShardTConfig
 	serverIDs     []int
 	db            *sql.DB
+	serverDown    chan int
 )
 
 func initHandler(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +50,7 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 
 		spawnNewServerInstance(fmt.Sprintf("Server%d", serverID), serverID)
 		configNewServerInstance(serverID, shardIDs, req.Schema)
+		go checkHeartbeat(serverID, serverDown)
 	}
 
 	for _, shard := range req.Shards {
@@ -170,6 +172,7 @@ func addServersHandler(w http.ResponseWriter, r *http.Request) {
 
 		spawnNewServerInstance(fmt.Sprintf("Server%d", serverID), serverID)
 		configNewServerInstance(serverID, shardIDs, schemaConfig)
+		go checkHeartbeat(serverID, serverDown)
 	}
 
 	for _, shard := range req.NewShards {
@@ -590,6 +593,9 @@ func main() {
 
 	shardTConfigs = make(map[string]ShardTConfig)
 
+	serverDown = make(chan int)
+	go monitorServers()
+
 	http.HandleFunc("/init", initHandler)
 	http.HandleFunc("/status", statusHandler)
 	http.HandleFunc("/add", addServersHandler)
@@ -603,7 +609,10 @@ func main() {
 
 	go func() {
 		<-sigs
-		cleanupServers(serverIDs)
+
+		remainingServerIDs := serverIDs
+		serverIDs = []int{} // prevent respawn of servers
+		cleanupServers(remainingServerIDs)
 		server.Shutdown(context.Background())
 		cleanupDone <- true
 	}()

@@ -594,7 +594,7 @@ func main() {
 	shardTConfigs = make(map[string]ShardTConfig)
 
 	serverDown = make(chan int)
-	go monitorServers()
+	go monitorServers(sigs)
 
 	http.HandleFunc("/init", initHandler)
 	http.HandleFunc("/status", statusHandler)

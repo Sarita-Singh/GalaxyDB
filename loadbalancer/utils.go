@@ -48,7 +48,7 @@ func buildServerInstance() {
 }
 
 func spawnNewServerInstance(hostname string, id int) {
-	cmd := exec.Command("sudo", "docker", "run", "-d", "--name", hostname, "--network", DOCKER_NETWORK_NAME, "-e", fmt.Sprintf("id=%d", id), fmt.Sprintf("%s:latest", SERVER_DOCKER_IMAGE_NAME))
+	cmd := exec.Command("sudo", "docker", "run", "--rm", "-d", "--name", hostname, "--network", DOCKER_NETWORK_NAME, "-e", fmt.Sprintf("id=%d", id), fmt.Sprintf("%s:latest", SERVER_DOCKER_IMAGE_NAME))
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -95,13 +95,6 @@ func removeServerInstance(hostname string) {
 		log.Fatalf("Failed to stop server instance '%s': %v\n", hostname, err)
 		return
 	}
-
-	cmd = exec.Command("sudo", "docker", "rm", hostname)
-	err = cmd.Run()
-	if err != nil {
-		log.Fatalf("Failed to remove server instance '%s': %v\n", hostname, err)
-		return
-	}
 }
 
 func cleanupServers(serverIDs []int) {
@@ -109,13 +102,8 @@ func cleanupServers(serverIDs []int) {
 
 	for _, server := range serverIDs {
 		stopCmd := exec.Command("sudo", "docker", "stop", fmt.Sprintf("Server%d", server))
-		removeCmd := exec.Command("sudo", "docker", "rm", fmt.Sprintf("Server%d", server))
-
 		if err := stopCmd.Run(); err != nil {
 			log.Printf("Failed to stop server '%d': %v\n", server, err)
-		}
-		if err := removeCmd.Run(); err != nil {
-			log.Printf("Failed to remove server '%d': %v\n", server, err)
 		}
 	}
 }

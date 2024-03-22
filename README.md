@@ -10,7 +10,7 @@
 
 ---
 
-```markdown
+
 # Distributed Database Performance Analysis
 
 This README documents the performance analysis of a distributed database system under different configurations. The analysis focuses on measuring the average read and write times to understand the impact of varying the number of shards, servers, and replicas.
@@ -63,5 +63,5 @@ Below are the results showing the average read and write times for each configur
 ### Combined:
 ![Write Performance for Configuration 3](testing/images/combined_write.png)
 ![Read Performance for Configuration 3](testing/images/combined_read.png)
-```
+
 

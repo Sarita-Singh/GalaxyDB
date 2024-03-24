@@ -5,16 +5,24 @@ const (
 	K     = 9
 )
 
-type ConsistentHashMap struct {
-	virtualServers [Slots]int
+// New hash functions
+func H(i uint32) uint32 {
+	i = (((i >> 16) ^ i) * 0x45d9f3b) >> 16 ^ i
+	return i
 }
 
+func assistH(i, j uint32) uint32 {
+	return H(i + H(j))
+}
 func hashRequest(i int) int {
-	return i*i + 2*i + 17
+	return int(assistH(uint32(i), uint32(i))) 
 }
 
 func hashVirtualServer(i, j int) int {
-	return i*i + j*j + 2*j + 25
+	return int(assistH(uint32(i), uint32(j))) 
+}
+type ConsistentHashMap struct {
+	virtualServers [Slots]int
 }
 
 func (hm *ConsistentHashMap) Init() {
@@ -35,6 +43,9 @@ func (hm *ConsistentHashMap) findEmptyServerSlot(hashValue int) int {
 	}
 	return slot
 }
+
+// Updated to use the Phi hash function
+
 
 func (hm *ConsistentHashMap) AddServer(serverID int) {
 	for j := 0; j < K; j++ {

@@ -9,7 +9,25 @@
 3. To stop the containers, run `make stop`
 
 ---
+# Hash Function used:
+We used a hash function, which , after careful testing, returned a balanced output for the loadbalancer,  enhancing the overall throughput of the system.
+```bash
+func H(i uint32) uint32 {
+	i = (((i >> 16) ^ i) * 0x45d9f3b) >> 16 ^ i
+	return i
+}
 
+func assistH(i, j uint32) uint32 {
+	return H(i + H(j))
+}
+func hashRequest(i int) int {
+	return int(assistH(uint32(i), uint32(i))) 
+}
+
+func hashVirtualServer(i, j int) int {
+	return int(assistH(uint32(i), uint32(j))) 
+}
+```
 
 # Distributed Database Performance Analysis
 
@@ -35,8 +53,8 @@ Below are the results showing the average read and write times for each configur
 
 ### Configuration 1: 4 Shards, 6 Servers, 3 Replicas
 
-- Average Write Time: 0.001972928476333618 seconds
-- Average Read Time: 0.002262153697013855 seconds
+- Average Write Time: 0.002496219277381897 seconds
+- Average Read Time: 0.0030115324020385742 seconds
 
 ![Write Performance for Configuration 1](testing/images/write_1.png)
 
@@ -44,8 +62,8 @@ Below are the results showing the average read and write times for each configur
 
 ### Configuration 2: 4 Shards, 6 Servers, 6 Replicas
 
-- Average Write Time: 0.0023517378568649293 seconds
-- Average Read Time: 0.0033333791494369507 seconds
+- Average Write Time: 0.0024059977769851685 seconds
+- Average Read Time: 0.003032594871520996 seconds
 
 ![Write Performance for Configuration 2](testing/images/write_2.png)
 
@@ -53,8 +71,8 @@ Below are the results showing the average read and write times for each configur
 
 ### Configuration 3: 6 Shards, 10 Servers, 8 Replicas
 
-- Average Write Time: 0.0020610308408737185 seconds
-- Average Read Time: 0.0025781458139419555 seconds
+- Average Write Time: 0.0031687368392944336 seconds
+- Average Read Time: 0.0040833707571029665 seconds
 
 ![Write Performance for Configuration 3](testing/images/write_3.png)
 

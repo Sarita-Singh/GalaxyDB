@@ -71,8 +71,8 @@ Below are the results showing the average read and write times for each configur
 
 ### Configuration 3: 6 Shards, 10 Servers, 8 Replicas
 
-- Average Write Time: 0.0031687368392944336 seconds
-- Average Read Time: 0.0040833707571029665 seconds
+- Average Write Time: 0.0040833707571029665 seconds
+- Average Read Time: 0.0031687368392944336 seconds
 
 ![Write Performance for Configuration 3](testing/images/write_3.png)
 

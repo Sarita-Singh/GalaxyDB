@@ -62,7 +62,7 @@ func getServerIP(hostname string) string {
 	cmd := exec.Command("sudo", "docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", hostname)
 	output, err := cmd.Output()
 	if err != nil {
-		log.Fatalln("Error running docker inspect: ", err)
+		log.Println("Error running docker inspect: ", err)
 		return ""
 	}
 
@@ -200,8 +200,13 @@ func checkHeartbeat(serverID int, serverDown chan<- int) {
 			return
 		}
 		serverIP := getServerIP(fmt.Sprintf("Server%d", serverID))
+		if len(serverIP) == 0 {
+			fmt.Printf("Server%d is down!\n", serverID)
+			serverDown <- serverID
+			return
+		}
 		resp, err := http.Get("http://" + serverIP + ":" + fmt.Sprint(SERVER_PORT) + "/heartbeat")
-		if len(serverIP) == 0 || err != nil || resp.StatusCode != http.StatusOK {
+		if err != nil || resp.StatusCode != http.StatusOK {
 			fmt.Printf("Server%d is down!\n", serverID)
 			serverDown <- serverID
 			return

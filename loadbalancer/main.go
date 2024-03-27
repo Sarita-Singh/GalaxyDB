@@ -507,6 +507,7 @@ func updateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Body.Close()
 	}
+	shardTConfigs[shardID].mutex.Unlock()
 
 	response := UpdateResponse{
 		Status:  "success",
@@ -575,12 +576,18 @@ func main() {
 	buildServerInstance()
 
 	sigs := make(chan os.Signal, 1)
-	cleanupDone := make(chan bool)
 
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	var err error
-	db, err = sql.Open("sqlite3", "galaxy-lb.db")
+	_, err := os.Stat(DB_FILENAME)
+	if err == nil {
+		err = os.Remove(DB_FILENAME)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	db, err = sql.Open("sqlite3", DB_FILENAME)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -609,20 +616,16 @@ func main() {
 
 	go func() {
 		<-sigs
-
-		remainingServerIDs := serverIDs
-		serverIDs = []int{} // prevent respawn of servers
-		cleanupServers(remainingServerIDs)
 		server.Shutdown(context.Background())
-		cleanupDone <- true
 	}()
 
 	log.Println("Load Balancer running on port 5000")
 	err = server.ListenAndServe()
 	if err != http.ErrServerClosed {
 		log.Fatalln(err)
+	} else {
+		log.Println("Load Balancer shut down successfully")
 	}
 
-	<-cleanupDone
-	os.Exit(0)
+	cleanupServers(serverIDs)
 }

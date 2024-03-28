@@ -1,9 +1,23 @@
 import os
 import requests
 import time
+import concurrent.futures
 
 performance = {"Write": {}, "Read": {}}
 numOfRW = 10000
+
+
+def perform_read_request(session, payload):
+    try:
+        response = session.post("http://localhost:3001/read", json=payload)
+        if response.status_code == 200:
+            return response.elapsed.microseconds
+        else:
+            print(f"Error in reading: {response.text}")
+            return 0
+    except Exception as e:
+        print(f"Exception during read request: {e}")
+        return 0
 
 
 def performRW(numOfShards, numOfServers, numOfReplicas):
@@ -53,7 +67,7 @@ def performRW(numOfShards, numOfServers, numOfReplicas):
     }
 
     print("Sending init request...")
-    response = requests.post("http://localhost:5000/init", json=payload)
+    response = requests.post("http://localhost:3001/init", json=payload)
     if response.status_code != 200:
         print("Error in init")
         print(response.text)
@@ -66,7 +80,7 @@ def performRW(numOfShards, numOfServers, numOfReplicas):
     for i in range(numOfRW):
         payload = {"Stud_id": i, "Stud_name": f"Student{i}", "Stud_marks": str(i % 100)}
         start_time = time.time()
-        response = requests.post("http://localhost:5000/write", json=payload)
+        response = requests.post("http://localhost:3001/write", json=payload)
         writeTime += time.time() - start_time
         if response.status_code != 200:
             print(f"Error in writing for Stud_id {i}: {response.text}")
@@ -74,30 +88,56 @@ def performRW(numOfShards, numOfServers, numOfReplicas):
     # Perform reads
     print("Performing reads...")
     readTime = 0
-    for i in range(numOfRW):
-        payload = {"Stud_id": {"low": i, "high": i + 1}}
-        start_time = time.time()
-        response = requests.post("http://localhost:5000/read", json=payload)
-        readTime += time.time() - start_time
-        if response.status_code != 200:
-            print(f"Error in reading for range {i}-{i+1}: {response.text}")
+    # for i in range(numOfRW):
+    #     payload = {"Stud_id": {"low": i, "high": i + 1}}
+    #     start_time = time.time()
+    #     response = requests.post("http://localhost:3001/read", json=payload)
+    #     readTime += time.time() - start_time
+    #     if response.status_code != 200:
+    #         print(f"Error in reading for range {i}-{i+1}: {response.text}")
+    print("parallel time reading")
+    # payload = {"n": numOfServers, "servers": []}
+    # response = requests.delete("http://localhost:3001/rm", json=payload)
+    readTime = 0
+    with requests.Session() as session:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [
+                executor.submit(
+                    perform_read_request,
+                    session,
+                    {"Stud_id": {"low": i, "high": i + 1}},
+                )
+                for i in range(numOfRW)
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                readTime += future.result()
+
+        # Update performance data
+        performance["Write"][
+            f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"
+        ] = writeTime
+        performance["Read"][
+            f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"
+        ] = (
+            readTime/1000000 
+        )  # Converting microseconds to seconds
+        print(f"Average write time: {writeTime} seconds")
+        print(f"Average read time For parellel requests: {readTime/1000000} seconds")
 
     # Convert time to seconds
-    readTime /= numOfRW
-    writeTime /= numOfRW
-    performance["Write"][
-        f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"
-    ] = writeTime
-    performance["Read"][
-        f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"
-    ] = readTime
-    print(f"Average write time: {writeTime}")   
-    print(f"Average read time: {readTime}")
+    # readTime /= numOfRW
+    # writeTime /= numOfRW
+    # performance["Write"][
+    #     f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"
+    # ] = writeTime
+    # performance["Read"][
+    #     f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"
+    # ] = readTime
+    # print(f"Average write time: {writeTime}")
+    # print(f"Average read time: {readTime}")
     appendPerformanceToFile()
 
-    print("Shutting down Docker containers...")
-    # os.system("docker compose down")
-    print("Docker containers shut down.")
+    os.system("docker compose down")
 
 
 def appendPerformanceToFile():
@@ -113,7 +153,7 @@ def appendPerformanceToFile():
 performance = {"Write": {}, "Read": {}}
 
 # performRW(4, 6, 3)
-# performRW(4, 6, 6)
+performRW(4, 6, 6)
 # performRW(6, 10, 8)
 
 import matplotlib.pyplot as plt
@@ -158,4 +198,4 @@ def printGraph():
     plt.show()
 
 
-printGraph()
+# printGraph()

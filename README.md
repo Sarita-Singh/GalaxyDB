@@ -31,7 +31,7 @@ func hashVirtualServer(i, j int) int {
 
 # Distributed Database Performance Analysis
 
-This README documents the performance analysis of a distributed database system under different configurations. The analysis focuses on measuring the average read and write times to understand the impact of varying the number of shards, servers, and replicas.
+This README documents the performance analysis of a distributed database system under different configurations. The analysis focuses on measuring the  read and write times to understand the impact of varying the number of shards, servers, and replicas.
 
 ## System Configuration
 
@@ -45,16 +45,16 @@ Each configuration was subjected to 10,000 write operations followed by 10,000 r
 
 ## Methodology
 
-The test setup involved initializing the distributed database with the specified configuration, performing the write operations, followed by the read operations. The average time taken for these operations was recorded to analyze the system's performance under each configuration.
+The test setup involved initializing the distributed database with the specified configuration, performing the write operations, followed by the read operations. The  time taken for these operations was recorded to analyze the system's performance under each configuration.
 
 ## Results
 
-Below are the results showing the average read and write times for each configuration. The results are also visualized in the form of graphs to provide a clear comparison.
+Below are the results showing the  read and write times for each configuration. The results are also visualized in the form of graphs to provide a clear comparison.
 
 ### Configuration 1: 4 Shards, 6 Servers, 3 Replicas
 
-- Average Write Time: 0.002496219277381897 seconds
-- Average Read Time: 0.0030115324020385742 seconds
+-  Write Time: 23.513784885406494 seconds
+-  Read Time: 48.415045 seconds
 
 ![Write Performance for Configuration 1](testing/images/write_1.png)
 
@@ -62,8 +62,8 @@ Below are the results showing the average read and write times for each configur
 
 ### Configuration 2: 4 Shards, 6 Servers, 6 Replicas
 
-- Average Write Time: 0.0024059977769851685 seconds
-- Average Read Time: 0.003032594871520996 seconds
+-  Write Time: 31.36978554725647 seconds
+-  Read Time: 44.735289 seconds
 
 ![Write Performance for Configuration 2](testing/images/write_2.png)
 
@@ -71,15 +71,15 @@ Below are the results showing the average read and write times for each configur
 
 ### Configuration 3: 6 Shards, 10 Servers, 8 Replicas
 
-- Average Write Time: 0.0040833707571029665 seconds
-- Average Read Time: 0.0031687368392944336 seconds
+-  Write Time: 30.403273105621338 seconds
+-  Read Time: 46.32252900000001 seconds
 
 ![Write Performance for Configuration 3](testing/images/write_3.png)
 
 ![Read Performance for Configuration 3](testing/images/read_3.png)
 
 ### Combined:
-![Write Performance for Configuration 3](testing/images/combined_write.png)
-![Read Performance for Configuration 3](testing/images/combined_read.png)
+![Write Performance for Configuration 3](testing/images/write_final_con.png)
+![Read Performance for Configuration 3](testing/images/read_final_con.png)
 
 

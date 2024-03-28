@@ -616,6 +616,7 @@ func main() {
 
 	go func() {
 		<-sigs
+		sigs <- os.Interrupt
 		server.Shutdown(context.Background())
 	}()
 
@@ -628,4 +629,5 @@ func main() {
 	}
 
 	cleanupServers(serverIDs)
+	os.Exit(0)
 }

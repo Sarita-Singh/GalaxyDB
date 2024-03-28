@@ -334,6 +334,7 @@ func monitorServers(stopSignal chan os.Signal) {
 	for {
 		select {
 		case <-stopSignal:
+			stopSignal <- os.Interrupt
 			return
 		case downServerID := <-serverDown:
 			replaceServerInstance(downServerID)
